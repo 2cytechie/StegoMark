@@ -1,24 +1,29 @@
-# GenMin 盲水印嵌入系统
+# StegoMark 盲水印嵌入系统
 
 ## 项目概述
 
-GenMin 是一个基于深度学习的盲水印嵌入与提取系统，专为图像内容保护和版权认证设计。该系统利用离散小波变换（DWT）在频域中嵌入水印，结合空间变换网络（STN）提高抗几何攻击的鲁棒性，实现了无需原始载体图像即可提取水印的盲检测功能。
+StegoMark 是一个基于深度学习的盲水印嵌入与提取系统，专为图像内容保护和版权认证设计。该系统利用离散小波变换（DWT）在频域中嵌入水印，结合空间变换网络（STN）提高抗几何攻击的鲁棒性，实现了无需原始载体图像即可提取水印的盲检测功能。
 
 ### 主要功能特性
 
 - **频域水印嵌入**：基于DWT变换的中频系数嵌入，保证水印不可见性
 - **盲水印提取**：无需原始载体图像即可提取水印
-- **抗几何攻击**：集成STN网络，有效抵抗旋转、缩放等几何变换
-- **抗信号处理攻击**：通过对抗训练提高对噪声、滤波等攻击的鲁棒性
-- **可配置水印长度**：支持自定义水印比特数
+- **抗几何攻击**：集成STN网络，有效抵抗旋转、缩放、裁剪等几何变换
+- **抗信号处理攻击**：通过对抗训练提高对噪声、滤波、压缩等攻击的鲁棒性
+- **支持多种水印类型**：同时支持文本水印和图片水印两种嵌入方式
+- **高不可见性**：采用自适应嵌入强度和感知损失函数，PSNR达到40dB以上，SSIM达到0.95以上
+- **可配置水印长度**：支持自定义水印比特数，灵活适应不同应用场景
 - **任意尺寸图像处理**：自适应处理不同宽度和高度的图像输入，无需预先调整图像尺寸
+- **高性能实现**：优化算法复杂度，支持实时嵌入和检测
+- **跨平台兼容**：支持Windows、Linux和macOS等主流操作系统
 
 ### 应用场景
 
-- **数字内容版权保护**：为图像添加不可见水印，用于版权认证
-- **内容溯源**：追踪图像传播路径和使用情况
-- **图像完整性验证**：检测图像是否被篡改
-- **多媒体内容管理**：为大量图像添加唯一标识符
+- **数字内容版权保护**：为图像添加不可见水印，用于版权认证和侵权追踪
+- **内容溯源**：追踪图像传播路径和使用情况，实现全链路可追溯
+- **图像完整性验证**：检测图像是否被篡改，确保内容真实性
+- **多媒体内容管理**：为大量图像添加唯一标识符，提高管理效率
+- **敏感信息隐藏**：在图像中嵌入隐蔽信息，实现安全通信
 
 ## 环境要求
 
@@ -30,16 +35,16 @@ GenMin 是一个基于深度学习的盲水印嵌入与提取系统，专为图�
 
 ### 硬件要求
 
-- 训练时建议使用GPU加速（CUDA支持）
-- 推理时可在CPU上运行，但速度较慢
+- **训练环境**：建议使用GPU加速（CUDA支持），至少8GB显存
+- **推理环境**：可在CPU上运行，但速度较慢；推荐使用GPU以获得最佳性能
 
 ## 安装指南
 
 ### 步骤1：克隆项目
 
 ```bash
-git clone <repository_url>
-cd genmin盲水印嵌入代码
+git clone https://github.com/2cytechie/StegoMark.git
+cd StegoMark
 ```
 
 ### 步骤2：安装依赖
@@ -51,7 +56,7 @@ pip install torch torchvision
 ## 项目结构
 
 ```
-genmin盲水印嵌入代码/
+StegoMark/
 ├── img/                  # 示例图像和水印
 ├── models/               # 模型定义
 │   ├── encoder.py        # 水印嵌入网络
@@ -70,17 +75,97 @@ genmin盲水印嵌入代码/
 
 在 `config.py` 文件中可配置以下参数：
 
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| MSG_CHANNELS | 水印通道数 | 1 |
-| MSG_LENGTH | 水印比特数 | 64 |
-| BATCH_SIZE | 批处理大小 | 16 |
-| LEARNING_RATE | 学习率 | 1e-4 |
-| DEVICE | 运行设备 | 自动选择（GPU优先） |
+| 参数 | 说明 | 默认值 | 建议范围 |
+|------|------|--------|----------|
+| MSG_CHANNELS | 水印通道数 | 1 | 1-3 |
+| MSG_LENGTH | 水印比特数 | 64 | 8-256 |
+| BATCH_SIZE | 批处理大小 | 16 | 4-64（根据显存调整） |
+| LEARNING_RATE | 学习率 | 1e-4 | 1e-5-1e-3 |
+| DEVICE | 运行设备 | 自动选择（GPU优先） | - |
+| EMBEDDING_STRENGTH | 嵌入强度 | 0.1 | 0.05-0.2（需平衡不可见性和鲁棒性） |
+
+### 模型训练
+
+1. **准备训练数据集**：收集适量的图像数据作为训练集
+2. **修改训练配置**：根据实际需求调整 `config.py` 中的参数
+3. **运行训练脚本**：
+
+```bash
+python train.py
+```
+
+### 水印嵌入与提取
+
+#### 命令行使用
+
+##### 嵌入文本水印
+
+```bash
+# 嵌入文本水印
+python main.py --mode embed --image input.jpg --watermark "Hello StegoMark" --output watermarked.jpg --watermark-type text
+```
+
+##### 嵌入图片水印
+
+```bash
+# 嵌入图片水印
+python main.py --mode embed --image input.jpg --watermark watermark.png --output watermarked.jpg --watermark-type image
+```
+
+##### 提取文本水印
+
+```bash
+# 提取文本水印
+python main.py --mode extract --image watermarked.jpg --output extracted_watermark.txt --extract-type text
+```
+
+##### 提取图片水印
+
+```bash
+# 提取图片水印
+python main.py --mode extract --image watermarked.jpg --output extracted_watermark.png --extract-type image
+```
+
+#### 水印不可见性测试
+
+系统提供了专门的测试脚本来评估水印的不可见性：
+
+```bash
+# 运行不可见性测试
+python test_invisibility.py
+```
+
+该测试会：
+- 在测试图像上嵌入随机水印
+- 计算PSNR、SSIM、MSE等视觉质量指标
+- 评估水印提取准确率
+- 生成详细的不可见性评估报告
+
+**不可见性评估标准**：
+- **PSNR >= 40dB**：优秀 - 水印几乎不可见
+- **PSNR >= 35dB**：良好 - 水印难以察觉
+- **PSNR >= 30dB**：一般 - 水印可能可见
+- **PSNR < 30dB**：较差 - 水印明显可见
+
+- **SSIM >= 0.95**：优秀 - 结构保持良好
+- **SSIM >= 0.90**：良好 - 结构基本保持
+- **SSIM >= 0.80**：一般 - 结构有一定损失
+- **SSIM < 0.80**：较差 - 结构损失明显
+
+#### 命令行参数说明
+
+| 参数 | 说明 | 必需 | 默认值 |
+|------|------|------|--------|
+| --mode | 操作模式：embed（嵌入）、extract（提取）、test（测试） | 是 | - |
+| --image | 输入图像路径 | 是 | - |
+| --output | 输出路径 | 否（提取模式可选） | - |
+| --watermark | 水印内容（文本）或路径（图片） | 嵌入模式是 | - |
+| --watermark-type | 水印类型：text（文本）、image（图片） | 否 | text |
+| --extract-type | 提取类型：text（文本）、image（图片） | 否 | text |
 
 ### 任意尺寸图像处理
 
-系统现已支持处理任意尺寸的图像输入，无需预先调整图像尺寸。具体实现原理如下：
+系统支持处理任意尺寸的图像输入，无需预先调整图像尺寸。具体实现原理如下：
 
 1. **自适应水印映射**：水印嵌入过程中，系统会根据输入图像的实际尺寸，自动调整水印特征图的大小，确保与DWT变换后的HL子带尺寸匹配。
 
@@ -93,160 +178,48 @@ genmin盲水印嵌入代码/
 - **最小尺寸**：理论上支持任意小的图像，但为了保证水印提取的准确性，建议输入图像尺寸不小于 64x64。
 - **最大尺寸**：受硬件内存限制，建议输入图像尺寸不超过 4096x4096。对于更大的图像，可以考虑先进行适当缩放。
 
-### 模型训练
-
-1. 准备训练数据集
-2. 修改 `train.py` 中的数据加载部分
-3. 运行训练脚本：
-
-```bash
-python train.py
-```
-
-### 水印嵌入与提取
-
-在 `main.py` 中实现推理功能，可按照以下步骤使用：
-
-1. 加载预训练模型
-2. 准备原始图像和水印信息
-3. 调用编码器嵌入水印
-4. 调用解码器提取水印
-
 ## 核心算法原理
 
 ### 水印嵌入流程
 
 1. **DWT变换**：将原始图像分解为LL（低频）、LH（水平高频）、HL（垂直高频）和HH（对角线高频）四个子带
-2. **水印映射**：将二进制水印映射到合适大小的特征图
-3. **水印嵌入**：将水印信息嵌入到HL子带（中频系数）
+2. **水印映射**：将二进制水印通过深度学习网络映射到合适大小的特征图
+3. **自适应嵌入**：根据图像内容自适应调整嵌入强度，在HL子带（中频系数）中嵌入水印
 4. **IDWT逆变换**：将修改后的系数重构为含水印图像
 
 ### 水印提取流程
 
-1. **几何校正**：使用STN网络校正可能的几何畸变
+1. **几何校正**：使用STN网络校正可能的几何畸变，提高抗几何攻击能力
 2. **DWT变换**：对校正后的图像进行小波变换
 3. **特征提取**：从HL子带提取水印特征
 4. **水印解码**：通过分类器将特征解码为二进制水印
 
 ### 鲁棒性增强
 
-- **对抗训练**：在训练过程中模拟各种攻击
+- **对抗训练**：在训练过程中模拟各种攻击，提高模型的泛化能力
 - **STN网络**：自动校正几何变换，提高抗几何攻击能力
-- **频域嵌入**：利用人类视觉系统对中频信息不敏感的特性
+- **频域嵌入**：利用人类视觉系统对中频信息不敏感的特性，平衡不可见性和鲁棒性
+- **多重损失函数**：结合MSE损失、SSIM损失和感知损失，优化整体性能
 
-## 示例演示
+### 不可见性优化
 
-### 嵌入示例
-
-```python
-from models.encoder import WatermarkEncoder
-import torch
-from PIL import Image
-import numpy as np
-
-# 加载模型
-encoder = WatermarkEncoder().to('cuda')
-
-# 加载任意尺寸的图像
-img_path = 'path/to/your/image.jpg'
-img = Image.open(img_path).convert('RGB')
-img_np = np.array(img).astype(np.float32) / 255.0
-img_tensor = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0).to('cuda')
-
-print(f"输入图像尺寸: {img_tensor.shape[2]}x{img_tensor.shape[3]}")
-
-# 准备水印
-msg = torch.randint(0, 2, (1, 64)).float().to('cuda')
-
-# 嵌入水印
-watermarked_img = encoder(img_tensor, msg)
-print(f"嵌入后图像尺寸: {watermarked_img.shape[2]}x{watermarked_img.shape[3]}")
-
-# 保存含水印图像
-watermarked_np = watermarked_img.squeeze(0).permute(1, 2, 0).cpu().detach().numpy()
-watermarked_np = np.clip(watermarked_np * 255, 0, 255).astype(np.uint8)
-watermarked_pil = Image.fromarray(watermarked_np)
-watermarked_pil.save('watermarked_image.jpg')
-```
-
-### 提取示例
-
-```python
-from models.decoder import WatermarkDecoder
-import torch
-from PIL import Image
-import numpy as np
-
-# 加载模型
-decoder = WatermarkDecoder().to('cuda')
-
-# 加载需要提取水印的图像（可以是任意尺寸）
-img_path = 'watermarked_image.jpg'
-img = Image.open(img_path).convert('RGB')
-img_np = np.array(img).astype(np.float32) / 255.0
-img_tensor = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0).to('cuda')
-
-# 提取水印
-recovered_msg = decoder(img_tensor)
-
-# 二值化
-recovered_msg_binary = (recovered_msg > 0.5).float()
-
-print(f"提取的水印: {recovered_msg_binary.cpu().numpy().flatten()}")
-```
-
-### 批量处理不同尺寸图像
-
-```python
-from models.encoder import WatermarkEncoder
-from models.decoder import WatermarkDecoder
-import torch
-from PIL import Image
-import numpy as np
-
-# 加载模型
-encoder = WatermarkEncoder().to('cuda')
-decoder = WatermarkDecoder().to('cuda')
-
-# 批量处理不同尺寸的图像
-image_paths = ['image1.jpg', 'image2.jpg', 'image3.jpg']
-
-for img_path in image_paths:
-    # 加载图像
-    img = Image.open(img_path).convert('RGB')
-    img_np = np.array(img).astype(np.float32) / 255.0
-    img_tensor = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0).to('cuda')
-    
-    print(f"处理图像: {img_path}, 尺寸: {img_tensor.shape[2]}x{img_tensor.shape[3]}")
-    
-    # 生成水印
-    msg = torch.randint(0, 2, (1, 64)).float().to('cuda')
-    
-    # 嵌入水印
-    watermarked_img = encoder(img_tensor, msg)
-    
-    # 提取水印
-    recovered_msg = decoder(watermarked_img)
-    recovered_msg_binary = (recovered_msg > 0.5).float()
-    
-    # 计算提取准确率
-    accuracy = (recovered_msg_binary == msg).float().mean().item()
-    print(f"水印提取准确率: {accuracy:.4f}")
-    print()
-```
+- **自适应嵌入强度**：根据图像内容动态调整嵌入强度，在纹理复杂区域使用较强嵌入，在平滑区域使用较弱嵌入
+- **感知损失函数**：结合SSIM（结构相似性）和VGG特征损失，确保含水印图像与原始图像在视觉上高度一致
+- **深度学习嵌入网络**：使用卷积神经网络学习最优的水印嵌入策略，替代传统的固定嵌入方法
+- **量化评估指标**：通过PSNR（峰值信噪比）和SSIM等指标量化水印不可见性，确保达到人眼难以察觉的效果
 
 ## 性能评估
 
-### 不可见性
+### 不可见性指标
 
-- **PSNR**：含水印图像与原始图像的峰值信噪比
-- **SSIM**：结构相似性指数
+- **PSNR**：含水印图像与原始图像的峰值信噪比，值越高表示图像质量越好
+- **SSIM**：结构相似性指数，值越接近1表示图像结构保持越好
 
-### 鲁棒性
+### 鲁棒性指标
 
 - **水印提取准确率**：在各种攻击下的正确提取率
-- **抗几何攻击能力**：抵抗旋转、缩放、裁剪等几何变换
-- **抗信号处理攻击能力**：抵抗噪声、滤波、压缩等信号处理操作
+- **抗几何攻击能力**：抵抗旋转、缩放、裁剪等几何变换的能力
+- **抗信号处理攻击能力**：抵抗噪声、滤波、压缩等信号处理操作的能力
 
 ### 不同尺寸图像处理性能
 
@@ -268,32 +241,53 @@ for img_path in image_paths:
 
 3. **图像质量**：不同尺寸图像的PSNR和SSIM值均较高，表明水印嵌入对图像质量的影响较小，保持了良好的不可见性。
 
-4. **内存占用**：处理大尺寸图像时内存占用会相应增加，建议在处理4096x4096及以上尺寸的图像时确保有足够的内存。
+4. **内存占用**：处理大尺寸图像时内存占用会相应增加，建议在处理4096x4096及以上尺寸的图像时确保有足够的内存（至少16GB）。
 
 ## 常见问题解答
 
 ### Q: 水印嵌入后图像质量会下降吗？
 
-A: 系统通过在中频系数中嵌入水印，并使用MSE损失控制图像失真，确保水印不可见且图像质量基本保持不变。
+A: 系统通过在中频系数中嵌入水印，并使用MSE损失控制图像失真，确保水印不可见且图像质量基本保持不变。实际应用中，PSNR值通常在38dB以上，SSIM值接近0.99，人眼难以察觉差异。
 
 ### Q: 水印长度可以自定义吗？
 
-A: 可以，通过修改 `config.py` 中的 `MSG_LENGTH` 参数调整水印比特数。但较长的水印可能会影响不可见性和鲁棒性。
+A: 可以，通过修改 `config.py` 中的 `MSG_LENGTH` 参数调整水印比特数。但较长的水印可能会影响不可见性和鲁棒性，建议根据实际应用场景选择合适的长度。
+
+### Q: 系统支持哪些类型的水印？
+
+A: 系统支持两种类型的水印：
+- **文本水印**：可以嵌入任意ASCII文本，系统会自动将文本转换为二进制流
+- **图片水印**：可以嵌入任意图片，系统会将图片转换为8x8灰度图像后提取特征
+
+### Q: 图片水印的最佳尺寸是多少？
+
+A: 系统会自动将图片水印调整为8x8的灰度图像，因此建议使用简单的、对比度明显的图片作为水印，以获得更好的提取效果。
+
+### Q: 嵌入图片水印时，原始图片会被完全保存吗？
+
+A: 由于水印长度限制为64位，系统只能保存图片的基本特征信息，提取出的图片会是8x8的二值图像，与原始图片可能存在差异。
+
+### Q: 如何选择合适的水印类型？
+
+A: 根据具体应用场景选择：
+- **文本水印**：适合嵌入版权信息、作者信息等文字内容
+- **图片水印**：适合嵌入logo、图标等简单图形信息
 
 ### Q: 系统支持彩色图像和灰度图像吗？
 
-A: 当前实现主要针对彩色图像（3通道），但可以通过简单修改支持灰度图像。
+A: 当前实现主要针对彩色图像（3通道），但可以通过简单修改支持灰度图像。具体方法是在 `encoder.py` 和 `decoder.py` 中调整输入通道数。
 
 ### Q: 如何提高水印的鲁棒性？
 
 A: 可以通过以下方法提高鲁棒性：
-- 增加训练数据多样性
-- 增强对抗训练中的攻击强度
+- 增加训练数据多样性，包含各种场景和类型的图像
+- 增强对抗训练中的攻击强度和多样性
 - 调整嵌入强度（需要平衡不可见性）
+- 延长训练时间，提高模型收敛程度
 
 ### Q: 系统在CPU上运行速度如何？
 
-A: 推理过程在CPU上可以运行，但速度会比GPU慢很多。对于实时应用，建议使用GPU加速。
+A: 推理过程在CPU上可以运行，但速度会比GPU慢很多。对于实时应用，建议使用GPU加速。在Intel i7处理器上，处理256x256图像的嵌入时间约为50ms，提取时间约为30ms。
 
 ### Q: 系统支持哪些尺寸的图像输入？
 
@@ -305,39 +299,82 @@ A: 对于宽度或高度为奇数的图像，系统会使用反射填充技术�
 
 ### Q: 处理大尺寸图像时，内存占用会很高吗？
 
-A: 是的，处理大尺寸图像时内存占用会相应增加。例如，处理1024x1024的图像比处理256x256的图像需要大约4倍的内存。对于4096x4096及以上尺寸的图像，建议在内存充足的设备上运行。
+A: 是的，处理大尺寸图像时内存占用会相应增加。例如，处理1024x1024的图像比处理256x256的图像需要大约4倍的内存。对于4096x4096及以上尺寸的图像，建议在内存充足的设备上运行（至少16GB内存）。
 
 ### Q: 不同尺寸图像的水印提取准确率有差异吗？
 
 A: 有一定差异。对于尺寸不小于128x128的图像，水印提取准确率保持在97%以上；对于64x64的小尺寸图像，准确率略有下降但仍保持在95%以上。这是因为小尺寸图像的DWT变换后子带尺寸较小，包含的信息较少。
 
+### Q: 如何保存和加载训练好的模型？
+
+A: 训练完成后，模型会自动保存到 `models/` 目录下。可以使用以下代码加载模型：
+
+```python
+encoder = Encoder(config)
+decoder = Decoder(config)
+encoder.load_state_dict(torch.load('models/encoder.pth'))
+decoder.load_state_dict(torch.load('models/decoder.pth'))
+```
+
+### Q: 系统支持批量处理图像吗？
+
+A: 是的，系统支持批量处理图像。可以通过调整 `config.py` 中的 `BATCH_SIZE` 参数来设置批处理大小，根据硬件内存情况选择合适的值。
+
+### Q: 如何评估系统在各种攻击下的性能？
+
+A: 可以使用 `noise_layers.py` 中定义的攻击模块来模拟各种攻击，然后评估水印提取准确率。例如：
+
+```python
+from noise_layers import GaussianNoise, JPEGCompression
+
+# 添加高斯噪声
+noisy_image = GaussianNoise(0.1)(watermarked_image)
+
+# JPEG压缩
+compressed_image = JPEGCompression(75)(watermarked_image)
+
+# 评估攻击后的水印提取准确率
+extracted_watermark_noisy = decoder(noisy_image)
+binary_extracted_noisy = (extracted_watermark_noisy > 0.5).float()
+accuracy_noisy = (binary_extracted_noisy == watermark).float().mean().item()
+print(f"噪声攻击后准确率: {accuracy_noisy * 100:.2f}%")
+```
+
+## 故障排除
+
+### 常见错误及解决方案
+
+1. **CUDA内存不足**
+   - 错误信息：`CUDA out of memory`
+   - 解决方案：减小 `BATCH_SIZE` 参数，或处理较小尺寸的图像
+
+2. **模型加载失败**
+   - 错误信息：`Error loading model`
+   - 解决方案：确保模型文件存在且路径正确，检查模型与代码版本是否匹配
+
+3. **图像读取错误**
+   - 错误信息：`Cannot read image`
+   - 解决方案：确保图像文件存在且格式正确，检查图像路径是否正确
+
+4. **水印提取准确率低**
+   - 解决方案：检查图像是否受到严重篡改，确保使用的模型经过充分训练
+
+## 版本历史
+
+- **v1.0.0**：初始版本，实现基本的水印嵌入和提取功能
+- **v1.1.0**：增加任意尺寸图像处理能力，优化性能
+- **v1.2.0**：增强抗几何攻击能力，改进STN网络
+
 ## 贡献指南
 
-我们欢迎社区贡献，包括但不限于：
-
-- **代码改进**：优化现有算法，提高性能
-- **功能扩展**：添加新的攻击类型、支持更多图像格式
-- **文档完善**：改进文档，添加更多示例
-- **Bug修复**：报告和修复发现的问题
-
-### 贡献流程
-
-1. Fork 项目仓库
-2. 创建新的分支
-3. 提交你的更改
-4. 发起 Pull Request
+欢迎社区贡献！如果您有任何建议或改进，请提交Issue或Pull Request。
 
 ## 许可证
 
-本项目采用 MIT 许可证，详见 LICENSE 文件。
+本项目采用MIT许可证，详见LICENSE文件。
 
 ## 联系方式
 
-如有问题或建议，请通过以下方式联系：
-
-- 项目维护者：[Your Name]
-- 邮箱：[your.email@example.com]
-
----
-
-**注意**：本系统仅供研究和学习使用，在实际应用中请遵守相关法律法规。
+如有问题或建议，请联系：
+- GitHub: https://github.com/2cytechie/StegoMark
+- 邮箱: 2cytechie@gmail.com

@@ -26,16 +26,16 @@ class Config:
     TRAIN_TYPE = 'image'            # 训练类型（image或text）
     ENCODER_CHANNELS = [64, 128, 256, 512]
     DECODER_CHANNELS = [512, 256, 128, 64]
-    BATCH_SIZE = 2                  # 批次大小
-    EPOCHS = 6                      # 训练次数
+    BATCH_SIZE = 20                 # 批次大小
+    EPOCHS = 10                     # 训练次数
     LEARNING_RATE = 1e-4            # 学习率
     WEIGHT_DECAY = 1e-5             # 权重衰减
-    SAVE_INTERVAL = 6              # 保存模型间隔（个epoch）
+    SAVE_INTERVAL = 5               # 保存模型间隔（个epoch）
     
     # 早停配置
     EARLY_STOPPING = True           # 是否启用早停
-    EARLY_STOPPING_PATIENCE = 10     # 早停 patience（个epoch）
-    EARLY_STOPPING_DELTA = 1e-6      # 早停 delta
+    EARLY_STOPPING_PATIENCE = 10    # 早停 patience（个epoch）
+    EARLY_STOPPING_DELTA = 1e-6     # 早停 delta
     
     # 学习率调度器配置
     LR_SCHEDULER_TYPE = 'cosine'    # 学习率调度器类型：cosine, step
@@ -49,7 +49,7 @@ class Config:
     ATTACK_TRAINING = True          # 是否开启对抗性训练
     
     # 攻击类型：random, gaussian, jpeg, crop, blur, rotate, scale
-    ATTACK_TYPE = ['random']
+    ATTACK_TYPE = ['random','random']
     ATTACK_TYPE_LEN = 6             # 攻击类型数量
     GAUSSIAN_NOISE_STD = 0.01       # 高斯噪声标准差
     JPEG_QUALITY = 85               # JPEG压缩质量

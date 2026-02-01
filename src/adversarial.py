@@ -1,7 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
+import random
 from config import config
+from tqdm import tqdm
 
 class NoiseLayer(nn.Module):
     """
@@ -15,6 +18,33 @@ class NoiseLayer(nn.Module):
         """
         super(NoiseLayer, self).__init__()
     
+    def add_random_attack(self, x):
+        """
+        添加随机扰动
+        
+        Args:
+            x: 输入张量
+            
+        Returns:
+            perturbed_x: 攻击后的张量
+        """
+        random_attack = random.randint(0, config.ATTACK_TYPE_LEN - 1)
+
+        if random_attack == 0:
+            x = self.add_gaussian_noise(x)
+        elif random_attack == 1:
+            x = self.add_jpeg_compression(x)
+        elif random_attack == 2:
+            x = self.add_random_crop(x)
+        elif random_attack == 3:
+            x = self.add_gaussian_blur(x)
+        elif random_attack == 4:
+            x = self.add_rotation(x)
+        elif random_attack == 5:
+            x = self.add_scaling(x)
+
+        return x
+
     def add_gaussian_noise(self, x, std=config.GAUSSIAN_NOISE_STD):
         """
         添加高斯噪声
@@ -56,7 +86,7 @@ class NoiseLayer(nn.Module):
         
         return x_up
     
-    def add_random_crop(self, x, crop_size=32):
+    def add_random_crop(self, x, crop_size=config.CROP_SIZE):
         """
         添加随机裁剪
         
@@ -65,7 +95,7 @@ class NoiseLayer(nn.Module):
             crop_size: 裁剪尺寸
             
         Returns:
-            cropped_x: 裁剪后的张量
+            cropped_x: 裁剪后保持裁剪原始尺寸的张量
         """
         b, c, h, w = x.shape
         
@@ -76,8 +106,34 @@ class NoiseLayer(nn.Module):
         # 裁剪
         cropped = []
         for i in range(b):
+            # 裁剪区域
             crop = x[i:i+1, :, start_h[i]:start_h[i]+crop_size, start_w[i]:start_w[i]+crop_size]
-            crop = F.interpolate(crop, size=(h, w), mode='bilinear', align_corners=True)
+            cropped.append(crop)
+        
+        return torch.cat(cropped, dim=0)
+    
+    def get_cropped_region(self, x, crop_size=config.CROP_SIZE):
+        """
+        获取随机裁剪区域（保持原始尺寸）
+        
+        Args:
+            x: 输入张量
+            crop_size: 裁剪尺寸
+            
+        Returns:
+            cropped_x: 裁剪后的张量（保持裁剪区域的原始尺寸）
+        """
+        b, c, h, w = x.shape
+        
+        # 随机裁剪位置
+        start_h = torch.randint(0, h - crop_size + 1, (b,))
+        start_w = torch.randint(0, w - crop_size + 1, (b,))
+        
+        # 裁剪
+        cropped = []
+        for i in range(b):
+            # 只执行裁剪操作，不进行缩放
+            crop = x[i:i+1, :, start_h[i]:start_h[i]+crop_size, start_w[i]:start_w[i]+crop_size]
             cropped.append(crop)
         
         return torch.cat(cropped, dim=0)
@@ -122,146 +178,114 @@ class NoiseLayer(nn.Module):
         kernel = kernel.expand(3, 1, kernel_size, kernel_size)
         return kernel
     
-    def forward(self, x, attack_type='all'):
+    def add_rotation(self, x, max_angle=config.MAX_ROTATION_ANGLE):
+        """
+        添加随机旋转
+        
+        Args:
+            x: 输入张量
+            max_angle: 最大旋转角度（度）
+            
+        Returns:
+            rotated_x: 旋转后的张量
+        """
+        b, c, h, w = x.shape
+        angle = torch.rand(b) * 2 * max_angle - max_angle
+        angle = angle.to(x.device)
+        
+        # 创建旋转矩阵
+        theta = angle * math.pi / 180
+        cos_theta = torch.cos(theta)
+        sin_theta = torch.sin(theta)
+        
+        # 构建变换矩阵
+        transform = torch.zeros(b, 2, 3, device=x.device)
+        transform[:, 0, 0] = cos_theta
+        transform[:, 0, 1] = -sin_theta
+        transform[:, 1, 0] = sin_theta
+        transform[:, 1, 1] = cos_theta
+        
+        # 计算旋转中心
+        center = torch.tensor([w/2, h/2], device=x.device).unsqueeze(0).unsqueeze(2).repeat(b, 1, 1)
+        transform[:, :, 2] = center.squeeze(2) - transform[:, :, :2].bmm(center).squeeze(2)
+        
+        # 应用变换
+        grid = F.affine_grid(transform, x.size(), align_corners=True)
+        rotated_x = F.grid_sample(x, grid, align_corners=True)
+        
+        return rotated_x
+    
+    def add_scaling(self, x, min_scale=config.MIN_SCALE, max_scale=config.MAX_SCALE):
+        """
+        添加随机缩放
+        
+        Args:
+            x: 输入张量
+            min_scale: 最小缩放比例
+            max_scale: 最大缩放比例
+            
+        Returns:
+            scaled_x: 缩放后的张量
+        """
+        b, c, h, w = x.shape
+        scale = torch.rand(b) * (max_scale - min_scale) + min_scale
+        scale = scale.to(x.device)
+        
+        # 构建变换矩阵
+        transform = torch.zeros(b, 2, 3, device=x.device)
+        transform[:, 0, 0] = scale
+        transform[:, 1, 1] = scale
+        
+        # 计算缩放中心
+        center = torch.tensor([w/2, h/2], device=x.device).unsqueeze(0).unsqueeze(2).repeat(b, 1, 1)
+        transform[:, :, 2] = center.squeeze(2) - transform[:, :, :2].bmm(center).squeeze(2)
+        
+        # 应用变换
+        grid = F.affine_grid(transform, x.size(), align_corners=True)
+        scaled_x = F.grid_sample(x, grid, align_corners=True)
+        
+        return scaled_x
+    
+    def forward(self, x, attack_type=config.ATTACK_TYPE):
         """
         前向传播
         
         Args:
             x: 输入张量
             attack_type: 攻击类型
-                'all': 所有攻击
+                'random': 随机攻击
                 'gaussian': 高斯噪声
                 'jpeg': JPEG压缩
                 'crop': 随机裁剪
                 'blur': 高斯模糊
+                'rotate': 旋转
+                'scale': 缩放
             
         Returns:
             x: 带攻击的张量
         """
-        if attack_type == 'all' or attack_type == 'gaussian':
-            x = self.add_gaussian_noise(x)
-        
-        if attack_type == 'all' or attack_type == 'jpeg':
-            x = self.add_jpeg_compression(x)
-        
-        if attack_type == 'all' or attack_type == 'crop':
-            x = self.add_random_crop(x)
-        
-        if attack_type == 'all' or attack_type == 'blur':
-            x = self.add_gaussian_blur(x)
+        for attack in attack_type:
+            if attack == 'random':
+                x = self.add_random_attack(x)
+            elif attack == 'gaussian':
+                x = self.add_gaussian_noise(x)
+            elif attack == 'jpeg':
+                x = self.add_jpeg_compression(x)
+            elif attack == 'crop':
+                x = self.add_random_crop(x)
+            elif attack == 'blur':
+                x = self.add_gaussian_blur(x)
+            elif attack == 'rotate':
+                x = self.add_rotation(x)
+            elif attack == 'scale':
+                x = self.add_scaling(x)
         
         return x
-
-class FGSM:
-    """
-    快速梯度符号法 (FGSM) 攻击
-    """
-    
-    def __init__(self, model, eps=config.ATTACK_EPS):
-        """
-        初始化FGSM攻击
-        
-        Args:
-            model: 目标模型
-            eps: 扰动大小
-        """
-        self.model = model
-        self.eps = eps
-    
-    def attack(self, watermarked_image, target_watermark):
-        """
-        执行FGSM攻击
-        
-        Args:
-            watermarked_image: 含水印图像
-            target_watermark: 目标水印
-            
-        Returns:
-            adversarial_image: 对抗样本
-        """
-        watermarked_image.requires_grad = True
-        
-        # 提取水印
-        extracted_watermark = self.model.extract(watermarked_image)
-        
-        # 计算损失
-        loss = F.mse_loss(extracted_watermark, target_watermark)
-        
-        # 计算梯度
-        loss.backward()
-        
-        # 生成对抗样本
-        gradient = watermarked_image.grad.data
-        sign_gradient = gradient.sign()
-        adversarial_image = watermarked_image + self.eps * sign_gradient
-        adversarial_image = torch.clamp(adversarial_image, 0, 1)
-        
-        return adversarial_image
-
-class PGD:
-    """
-    投影梯度下降 (PGD) 攻击
-    """
-    
-    def __init__(self, model, eps=config.ATTACK_EPS, alpha=0.01, iterations=config.ATTACK_ITERATIONS):
-        """
-        初始化PGD攻击
-        
-        Args:
-            model: 目标模型
-            eps: 扰动大小
-            alpha: 步长
-            iterations: 迭代次数
-        """
-        self.model = model
-        self.eps = eps
-        self.alpha = alpha
-        self.iterations = iterations
-    
-    def attack(self, watermarked_image, target_watermark):
-        """
-        执行PGD攻击
-        
-        Args:
-            watermarked_image: 含水印图像
-            target_watermark: 目标水印
-            
-        Returns:
-            adversarial_image: 对抗样本
-        """
-        # 初始化对抗样本
-        adversarial_image = watermarked_image.clone().detach()
-        adversarial_image = adversarial_image + torch.randn_like(adversarial_image) * 0.001
-        adversarial_image = torch.clamp(adversarial_image, 0, 1)
-        
-        for i in range(self.iterations):
-            # 创建一个新的叶子张量
-            adv_image = adversarial_image.clone().detach()
-            adv_image.requires_grad = True
-            
-            # 提取水印
-            extracted_watermark = self.model.extract(adv_image)
-            
-            # 计算损失
-            loss = F.mse_loss(extracted_watermark, target_watermark)
-            
-            # 计算梯度
-            loss.backward()
-            
-            # 更新对抗样本
-            gradient = adv_image.grad.data
-            sign_gradient = gradient.sign()
-            adversarial_image = adversarial_image + self.alpha * sign_gradient
-            
-            # 投影到扰动范围内
-            perturbation = torch.clamp(adversarial_image - watermarked_image, -self.eps, self.eps)
-            adversarial_image = torch.clamp(watermarked_image + perturbation, 0, 1)
-        
-        return adversarial_image
 
 class AdversarialTrainer:
     """
     对抗性训练器
+    用于训练水印模型，支持对抗性攻击
     """
     
     def __init__(self, model, optimizer, criterion):
@@ -269,7 +293,7 @@ class AdversarialTrainer:
         初始化对抗性训练器
         
         Args:
-            model: 目标模型
+            model: 水印模型
             optimizer: 优化器
             criterion: 损失函数
         """
@@ -277,179 +301,96 @@ class AdversarialTrainer:
         self.optimizer = optimizer
         self.criterion = criterion
         self.noise_layer = NoiseLayer()
-        self.pgd_attack = PGD(model)
     
-    def train_step(self, cover_images, watermarks):
+    def train_epoch(self, train_loader, attack_training=False):
         """
-        训练步骤
+        训练一个 epoch
         
         Args:
-            cover_images: 载体图像
-            watermarks: 水印
-            
-        Returns:
-            loss: 训练损失
-        """
-        self.model.train()
-        self.optimizer.zero_grad()
-        
-        # 1. 嵌入水印
-        watermarked_images = self.model.embed(cover_images, watermarks)
-        
-        # 2. 应用噪声层
-        noisy_images = self.noise_layer(watermarked_images)
-        
-        # 3. 提取水印
-        extracted_watermarks = self.model.extract(noisy_images)
-        
-        # 4. 计算损失
-        # 水印提取损失
-        extraction_loss = self.criterion(extracted_watermarks, watermarks)
-        # 图像质量保持损失
-        quality_loss = self.criterion(watermarked_images, cover_images)
-        # 组合损失，调整权重平衡
-        loss = extraction_loss + 10.0 * quality_loss
-        
-        # 5. 反向传播
-        loss.backward()
-        self.optimizer.step()
-        
-        return loss.item()
-    
-    def adversarial_train_step(self, cover_images, watermarks):
-        """
-        对抗性训练步骤
-        
-        Args:
-            cover_images: 载体图像
-            watermarks: 水印
-            
-        Returns:
-            loss: 训练损失
-        """
-        self.model.train()
-        self.optimizer.zero_grad()
-        
-        # 1. 嵌入水印
-        watermarked_images = self.model.embed(cover_images, watermarks)
-        
-        # 2. 生成对抗样本
-        adversarial_images = self.pgd_attack.attack(watermarked_images, watermarks)
-        
-        # 3. 提取水印（从对抗样本）
-        extracted_watermarks = self.model.extract(adversarial_images)
-        
-        # 4. 计算损失
-        # 水印提取损失
-        extraction_loss = self.criterion(extracted_watermarks, watermarks)
-        # 图像质量保持损失
-        quality_loss = self.criterion(watermarked_images, cover_images)
-        # 组合损失，调整权重平衡
-        loss = extraction_loss + 10.0 * quality_loss
-        
-        # 5. 反向传播
-        loss.backward()
-        self.optimizer.step()
-        
-        return loss.item()
-    
-    def train_epoch(self, dataloader, adversarial_training=True):
-        """
-        训练一个epoch
-        
-        Args:
-            dataloader: 数据加载器
-            adversarial_training: 是否使用对抗性训练
+            train_loader: 训练数据加载器
+            attack_training: 是否进行对抗性训练
             
         Returns:
             avg_loss: 平均损失
         """
+        self.model.train()
         total_loss = 0
-        total_batches = 0
+        total_samples = 0
         
-        from tqdm import tqdm
-        
-        for batch in tqdm(dataloader, desc="Training", unit="batch"):
-            cover_images, watermarks = batch
-            # 使用配置的设备
-            cover_images = cover_images.to(config.DEVICE)
-            watermarks = watermarks.to(config.DEVICE)
+        for images, watermarks in tqdm(train_loader, desc="Training"):
+            images = images.to(self.model.device)
+            watermarks = watermarks.to(self.model.device)
             
-            if adversarial_training:
-                loss = self.adversarial_train_step(cover_images, watermarks)
+            # 前向传播
+            watermarked_images, _ = self.model(images, watermarks)
+            
+            # 应用噪声层
+            if attack_training:
+                noisy_images = self.noise_layer(watermarked_images)
             else:
-                loss = self.train_step(cover_images, watermarks)
+                noisy_images = watermarked_images
             
-            total_loss += loss
-            total_batches += 1
+            # 从噪声图像中提取水印
+            extracted_watermarks = self.model.extract(noisy_images)
+            
+            # 计算损失
+            embedding_loss = self.criterion(watermarked_images, images)
+            extraction_loss = self.criterion(extracted_watermarks, watermarks)
+            loss = embedding_loss + extraction_loss
+            
+            # 反向传播
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+            
+            total_loss += loss.item() * images.size(0)
+            total_samples += images.size(0)
         
-        avg_loss = total_loss / total_batches
+        avg_loss = total_loss / total_samples
         return avg_loss
     
-    def validate(self, dataloader):
+    def validate(self, val_loader):
         """
-        验证
+        验证模型
         
         Args:
-            dataloader: 数据加载器
+            val_loader: 验证数据加载器
             
         Returns:
-            avg_loss: 平均损失
-            accuracy: 提取准确率
+            val_loss: 验证损失
+            val_accuracy: 验证准确率
         """
         self.model.eval()
         total_loss = 0
-        total_accuracy = 0
-        total_batches = 0
-        
-        from tqdm import tqdm
+        total_samples = 0
+        correct = 0
         
         with torch.no_grad():
-            for batch in tqdm(dataloader, desc="Validation", unit="batch"):
-                cover_images, watermarks = batch
-                cover_images = cover_images.to(config.DEVICE)
-                watermarks = watermarks.to(config.DEVICE)
+            for images, watermarks in tqdm(val_loader, desc="Validating"):
+                images = images.to(self.model.device)
+                watermarks = watermarks.to(self.model.device)
                 
-                # 嵌入水印
-                watermarked_images = self.model.embed(cover_images, watermarks)
+                # 前向传播
+                watermarked_images, _ = self.model(images, watermarks)
                 
-                # 应用噪声
+                # 应用噪声层
                 noisy_images = self.noise_layer(watermarked_images)
                 
-                # 提取水印
+                # 从噪声图像中提取水印
                 extracted_watermarks = self.model.extract(noisy_images)
                 
                 # 计算损失
-                loss = self.criterion(extracted_watermarks, watermarks)
-                total_loss += loss.item()
+                embedding_loss = self.criterion(watermarked_images, images)
+                extraction_loss = self.criterion(extracted_watermarks, watermarks)
+                loss = embedding_loss + extraction_loss
+                
+                total_loss += loss.item() * images.size(0)
+                total_samples += images.size(0)
                 
                 # 计算准确率
-                accuracy = self.calculate_accuracy(extracted_watermarks, watermarks)
-                total_accuracy += accuracy
-                
-                total_batches += 1
+                predicted = (extracted_watermarks > 0.5).float()
+                correct += (predicted == watermarks).sum().item()
         
-        avg_loss = total_loss / total_batches
-        avg_accuracy = total_accuracy / total_batches
-        
-        return avg_loss, avg_accuracy
-    
-    def calculate_accuracy(self, extracted, target):
-        """
-        计算提取准确率
-        
-        Args:
-            extracted: 提取的水印
-            target: 目标水印
-            
-        Returns:
-            accuracy: 准确率
-        """
-        # 二值化
-        extracted_binary = (extracted > 0.5).float()
-        target_binary = (target > 0.5).float()
-        
-        # 计算准确率
-        correct = (extracted_binary == target_binary).float().mean()
-        
-        return correct.item()
+        val_loss = total_loss / total_samples
+        val_accuracy = correct / (total_samples * watermarks.numel() / images.size(0))
+        return val_loss, val_accuracy

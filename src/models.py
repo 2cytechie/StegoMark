@@ -246,6 +246,7 @@ class WatermarkModel(nn.Module):
         super(WatermarkModel, self).__init__()
         
         self.watermark_type = watermark_type
+        self.device = device
         watermark_channels = 1 if watermark_type == 'image' else config.TEXT_WATERMARK_LENGTH // (config.WATERMARK_SIZE * config.WATERMARK_SIZE)
         
         # 编码器和解码器

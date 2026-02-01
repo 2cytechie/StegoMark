@@ -1,2 +1,5 @@
 data/*
+output/*
 .trae/*
+*.pyc
+__pycache__/

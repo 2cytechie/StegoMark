@@ -7,6 +7,60 @@ from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import numpy as np
 from tqdm import tqdm
+import logging
+import time
+import io
+import contextlib
+
+class Logger:
+    def __init__(self, log_file):
+        self.log_file = log_file
+        self.console = sys.stdout
+        self.file = None
+        self._setup_logger()
+    
+    def _setup_logger(self):
+        """设置日志文件"""
+        try:
+            os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
+            self.file = open(self.log_file, 'w', encoding='utf-8')
+        except Exception as e:
+            print(f"Error opening log file: {e}")
+            self.file = None
+    
+    def write(self, message):
+        """写入消息到控制台和文件"""
+        # 写入控制台
+        self.console.write(message)
+        self.console.flush()
+        
+        # 写入文件
+        if self.file:
+            try:
+                self.file.write(message)
+                self.file.flush()
+            except Exception as e:
+                print(f"Error writing to log file: {e}")
+    
+    def flush(self):
+        """刷新缓冲区"""
+        self.console.flush()
+        if self.file:
+            try:
+                self.file.flush()
+            except Exception as e:
+                print(f"Error flushing log file: {e}")
+    
+    def close(self):
+        """关闭日志文件"""
+        if self.file:
+            try:
+                self.file.close()
+            except Exception as e:
+                print(f"Error closing log file: {e}")
+
+# 保存原始的stdout
+original_stdout = sys.stdout
 
 # 添加父目录到Python路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -113,84 +167,180 @@ class WatermarkDataset(Dataset):
         
         return image, watermark
 
-def train():
+def train(finetune=False, finetune_checkpoint=None):
     """
     训练水印模型
+    
+    Args:
+        finetune: 是否为微调模式
+        finetune_checkpoint: 微调时加载的模型路径
     """
-    # 配置
-    watermark_type = config.TRAIN_TYPE
+    # 创建日志文件
+    timestamp = time.strftime('%Y%m%d_%H%M%S', time.localtime())
+    log_filename = f"train_log_{timestamp}.txt"
+    log_filepath = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "output", log_filename)
     
-    # 创建数据集
-    train_dataset = WatermarkDataset(config.TRAIN_DIR, watermark_type=watermark_type)
-    val_dataset = WatermarkDataset(config.VAL_DIR, watermark_type=watermark_type)
+    # 重定向stdout到日志记录器
+    logger = Logger(log_filepath)
+    sys.stdout = logger
     
-    # 创建数据加载器
-    train_loader = DataLoader(train_dataset, batch_size=config.BATCH_SIZE, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=config.BATCH_SIZE, shuffle=False)
-    
-    # 启用GPU加速
-    device = torch.device(config.DEVICE)
-    config.DEVICE = device
-    print(f"Training on device: {device}")
-    
-    # 初始化模型，直接在GPU上创建
-    model = WatermarkModel(watermark_type=watermark_type, device=device)
-    model.to(device)
-    
-    # 优化器和损失函数
-    optimizer = optim.Adam(model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY)
-    criterion = nn.MSELoss()
-    
-    # 对抗性训练器
-    trainer = AdversarialTrainer(model, optimizer, criterion)
-    
-    # 加载模型
-    start_epoch = 0
-    if config.RESUME and config.RESUME_CHECKPOINT:
-        if os.path.exists(config.RESUME_CHECKPOINT):
-            print(f"Loading checkpoint from {config.RESUME_CHECKPOINT}")
-            checkpoint = torch.load(config.RESUME_CHECKPOINT, map_location=device)
+    try:
+        print(f"Training started at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
+        print(f"Log file: {log_filepath}")
+        print(f"Finetune mode: {finetune}")
+        if finetune_checkpoint:
+            print(f"Finetune checkpoint: {finetune_checkpoint}")
+        
+        # 配置
+        watermark_type = config.TRAIN_TYPE
+        
+        # 创建数据集
+        train_dataset = WatermarkDataset(config.TRAIN_DIR, watermark_type=watermark_type)
+        val_dataset = WatermarkDataset(config.VAL_DIR, watermark_type=watermark_type)
+        
+        # 创建数据加载器
+        train_loader = DataLoader(train_dataset, batch_size=config.BATCH_SIZE, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=config.BATCH_SIZE, shuffle=False)
+        
+        # 启用GPU加速
+        device = torch.device(config.DEVICE)
+        config.DEVICE = device
+        print(f"Training on device: {device}")
+        
+        # 初始化模型，直接在GPU上创建
+        model = WatermarkModel(watermark_type=watermark_type, device=device)
+        model.to(device)
+        
+        # 优化器和损失函数
+        learning_rate = config.FINETUNE_LR if finetune else config.LEARNING_RATE
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=config.WEIGHT_DECAY)
+        criterion = nn.MSELoss()
+        
+        # 学习率调度器
+        if config.LR_SCHEDULER_TYPE == 'cosine':
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.EPOCHS)
+        elif config.LR_SCHEDULER_TYPE == 'step':
+            scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=config.LR_STEP_SIZE, gamma=config.LR_GAMMA)
+        else:
+            scheduler = None
+        
+        # 对抗性训练器
+        trainer = AdversarialTrainer(model, optimizer, criterion)
+        
+        # 加载模型
+        start_epoch = 0
+        best_val_loss = float('inf')
+        best_model_path = os.path.join(config.CHECKPOINT_DIR, f"best_model_{watermark_type}.pth")
+        patience_counter = 0
+        
+        # 加载微调模型或恢复训练
+        load_path = finetune_checkpoint if finetune else (config.RESUME_CHECKPOINT if config.RESUME else None)
+        if load_path and os.path.exists(load_path):
+            print(f"Loading checkpoint from {load_path}")
+            checkpoint = torch.load(load_path, map_location=device)
             
             # 加载模型状态
             model.load_state_dict(checkpoint['model_state_dict'])
             
-            # 加载优化器状态
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            # 加载优化器状态（如果不是微调）
+            if not finetune and 'optimizer_state_dict' in checkpoint:
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
             # 加载训练状态
-            start_epoch = checkpoint['epoch'] + 1
-            
+            if not finetune and 'epoch' in checkpoint:
+                start_epoch = checkpoint['epoch'] + 1
+                
             print(f"Resuming training from epoch {start_epoch}")
-        else:
-            print(f"Checkpoint file not found: {config.RESUME_CHECKPOINT}")
+        elif load_path:
+            print(f"Checkpoint file not found: {load_path}")
             print("Starting training from scratch")
-    
-    # 训练循环
-    for epoch in range(start_epoch, config.EPOCHS):
-        print(f"Epoch {epoch+1}/{config.EPOCHS}")
         
-        # 训练
-        train_loss = trainer.train_epoch(train_loader, config.ADVERSARIAL_TRAINING)
-        print(f"Train Loss: {train_loss:.4f}")
+        # 训练循环
+        for epoch in range(start_epoch, config.EPOCHS):
+            print(f"Epoch {epoch+1}/{config.EPOCHS}")
+            print(f"Current learning rate: {optimizer.param_groups[0]['lr']:.6f}")
+            
+            # 训练
+            train_loss = trainer.train_epoch(train_loader, config.ATTACK_TRAINING)
+            print(f"Train Loss: {train_loss:.4f}")
+            
+            # 验证
+            val_loss, val_accuracy = trainer.validate(val_loader)
+            print(f"Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")
+            
+            # 更新学习率
+            if scheduler:
+                scheduler.step()
+            
+            # 早停机制
+            if config.EARLY_STOPPING:
+                if val_loss < best_val_loss - config.EARLY_STOPPING_DELTA:
+                    best_val_loss = val_loss
+                    patience_counter = 0
+                    # 保存最佳模型
+                    os.makedirs(config.CHECKPOINT_DIR, exist_ok=True)
+                    torch.save({
+                        'epoch': epoch,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'loss': val_loss,
+                        'accuracy': val_accuracy
+                    }, best_model_path)
+                    print(f"Saved best model to {best_model_path}")
+                else:
+                    patience_counter += 1
+                    print(f"Early stopping patience: {patience_counter}/{config.EARLY_STOPPING_PATIENCE}")
+                    if patience_counter >= config.EARLY_STOPPING_PATIENCE:
+                        print("Early stopping triggered!")
+                        break
+            
+            # 保存模型
+            if (epoch + 1) % config.SAVE_INTERVAL == 0:
+                checkpoint_path = os.path.join(config.CHECKPOINT_DIR, f"model_{watermark_type}_epoch_{epoch+1}.pth")
+                os.makedirs(config.CHECKPOINT_DIR, exist_ok=True)
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'loss': val_loss,
+                    'accuracy': val_accuracy
+                }, checkpoint_path)
+                print(f"Saved model to {checkpoint_path}")
+            
+            print("=" * 60)
         
-        # 验证
-        val_loss, val_accuracy = trainer.validate(val_loader)
-        print(f"Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")
-        
-        # 保存模型
-        if (epoch + 1) % config.SAVE_INTERVAL == 0:
-            checkpoint_path = os.path.join(config.CHECKPOINT_DIR, f"model_{watermark_type}_epoch_{epoch+1}.pth")
-            os.makedirs(config.CHECKPOINT_DIR, exist_ok=True)
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'loss': val_loss,
-                'accuracy': val_accuracy
-            }, checkpoint_path)
-            print(f"Saved model to {checkpoint_path}")
-        
-        print("=" * 60)
+        print(f"Training completed at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
+        print(f"Training completed! Best model saved at: {best_model_path}")
+        return best_model_path
+    except Exception as e:
+        print(f"Error during training: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+    finally:
+        # 恢复原始的stdout
+        sys.stdout = original_stdout
+        # 关闭日志文件
+        logger.close()
+        print(f"Log file closed. Training process finished at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
 
 if __name__ == "__main__":
-    train()
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Train watermark model")
+    parser.add_argument('--finetune', action='store_true', help='Enable finetuning mode')
+    parser.add_argument('--checkpoint', type=str, help='Path to checkpoint for finetuning')
+    args = parser.parse_args()
+    
+    # 如果是微调但没有指定checkpoint，尝试使用最佳模型
+    if args.finetune and not args.checkpoint:
+        watermark_type = config.TRAIN_TYPE
+        best_model_path = os.path.join(config.CHECKPOINT_DIR, f"best_model_{watermark_type}.pth")
+        if os.path.exists(best_model_path):
+            args.checkpoint = best_model_path
+            print(f"Finetuning mode enabled, using best model: {best_model_path}")
+        else:
+            print("No best model found for finetuning. Please specify a checkpoint.")
+            exit(1)
+    
+    train(finetune=args.finetune, finetune_checkpoint=args.checkpoint)

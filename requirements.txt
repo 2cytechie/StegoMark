@@ -12,6 +12,7 @@ torchvision>=0.9.0
 
 # DWT变换
 pytorch-wavelets>=1.3.0
+pywavelets>=1.1.1
 
 # 对抗性训练
 torchattacks>=3.4.0

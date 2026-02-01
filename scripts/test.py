@@ -2,6 +2,8 @@ import os
 import sys
 import argparse
 import torch
+from PIL import Image
+import numpy as np
 
 # 添加项目根目录到Python路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -17,6 +19,7 @@ config.DEVICE = 'cpu'
 from src.embedding import WatermarkEmbedding
 from src.extraction import WatermarkExtraction
 from src.evaluation import PerformanceEvaluator
+from src.adversarial import NoiseLayer
 
 class WatermarkTester:
     """
@@ -38,6 +41,7 @@ class WatermarkTester:
             self.embedding = WatermarkEmbedding(watermark_type=watermark_type)
             self.extraction = WatermarkExtraction(watermark_type=watermark_type)
             self.evaluator = PerformanceEvaluator()
+            self.noise_layer = NoiseLayer()
             
             # 加载模型权重
             if checkpoint_path:
@@ -136,6 +140,63 @@ class WatermarkTester:
             print(f"Extraction Accuracy: {report['Extraction_Accuracy']:.4f}")
             print("=============================")
             
+            # 6. 应用各种攻击并保存结果
+            print("\n=== Applying Attacks ===")
+            
+            # 加载水印图像
+            watermarked_pil = Image.open(watermarked_path).convert('RGB')
+            watermarked_np = np.array(watermarked_pil) / 255.0
+            watermarked_tensor = torch.tensor(watermarked_np, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
+            
+            # 定义要应用的攻击
+            attacks = [
+                ('gaussian', 'gaussian'),
+                ('jpeg', 'jpeg'),
+                ('crop', 'crop'),
+                ('blur', 'blur'),
+                ('rotate', 'rotate'),
+                ('scale', 'scale'),
+            ]
+            
+            for attack_name, attack_type in attacks:
+                try:
+                    print(f"Applying {attack_name} attack...")
+                    
+                    # 应用攻击
+                    if attack_type == 'gaussian':
+                        attacked_tensor = self.noise_layer.add_gaussian_noise(watermarked_tensor)
+                    elif attack_type == 'jpeg':
+                        attacked_tensor = self.noise_layer.add_jpeg_compression(watermarked_tensor)
+                    elif attack_type == 'crop':
+                        attacked_tensor = self.noise_layer.add_random_crop(watermarked_tensor)
+                    elif attack_type == 'blur':
+                        attacked_tensor = self.noise_layer.add_gaussian_blur(watermarked_tensor)
+                    elif attack_type == 'rotate':
+                        attacked_tensor = self.noise_layer.add_rotation(watermarked_tensor)
+                    elif attack_type == 'scale':
+                        attacked_tensor = self.noise_layer.add_scaling(watermarked_tensor)
+                    else:
+                        continue
+                    
+                    # 转换回PIL图像并保存
+                    attacked_np = attacked_tensor.squeeze(0).permute(1, 2, 0).numpy()
+                    attacked_np = (attacked_np * 255).astype(np.uint8)
+                    attacked_pil = Image.fromarray(attacked_np)
+                    attacked_path = os.path.join(output_dir, f"watermarked_{attack_name}.png")
+                    attacked_pil.save(attacked_path)
+                    print(f"Saved attacked image: {attacked_path}")
+                    
+                    # 从攻击后的图像中提取水印
+                    extracted_attacked_path = os.path.join(output_dir, f"extracted_watermark_{attack_name}.png")
+                    extracted_attacked_watermark = self.extraction.extract(attacked_path, extracted_attacked_path)
+                    print(f"Saved extracted watermark from {attack_name} attack: {extracted_attacked_path}")
+                    
+                except Exception as e:
+                    print(f"Error processing {attack_name} attack: {str(e)}")
+                    continue
+            
+            print("=============================")
+            
             return report
         except Exception as e:
             print(f"Error testing single image: {str(e)}")
@@ -225,8 +286,8 @@ def main():
     """
     try:
         # 配置
-        watermark_type = 'image'  # 'image' 或 'text'
-        checkpoint_path = os.path.join(config.CHECKPOINT_DIR, f"model_{watermark_type}_epoch_5.pth")
+        watermark_type = config.WATERMARK_TYPES
+        checkpoint_path = os.path.join(config.CHECKPOINT_DIR, config.WATERMARK_MODEL)
         
         # 创建测试器
         tester = WatermarkTester(watermark_type=watermark_type, checkpoint_path=checkpoint_path)
@@ -245,9 +306,9 @@ def main():
         # tester.test_batch_images(target_dir, watermark_list, output_dir)
         
         # 单个测试
-        cover_image = "img/target.png"
+        cover_image = "img/img9.jpg"
         watermark_input = "img/watermark.png" if watermark_type == 'image' else "Test watermark text"
-        tester.test_single_image(cover_image, watermark_input, config.OUTPUT_DIR, "test_single.png")
+        tester.test_single_image(cover_image, watermark_input, config.OUTPUT_DIR, "test_single_image.png")
         
     except Exception as e:
         print(f"Error in main: {str(e)}")

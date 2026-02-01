@@ -261,12 +261,12 @@ def train(finetune=False, finetune_checkpoint=None):
             print(f"Current learning rate: {optimizer.param_groups[0]['lr']:.6f}")
             
             # 训练
-            train_loss = trainer.train_epoch(train_loader, config.ATTACK_TRAINING)
-            print(f"Train Loss: {train_loss:.4f}")
+            train_loss, train_psnr = trainer.train_epoch(train_loader, config.ATTACK_TRAINING)
+            print(f"Train Loss: {train_loss:.4f}, Train PSNR: {train_psnr:.2f} dB")
             
             # 验证
-            val_loss, val_accuracy = trainer.validate(val_loader)
-            print(f"Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")
+            val_loss, val_accuracy, val_psnr = trainer.validate(val_loader)
+            print(f"Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}, Val PSNR: {val_psnr:.2f} dB")
             
             # 更新学习率
             if scheduler:

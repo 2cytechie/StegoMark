@@ -112,7 +112,7 @@ class Encoder(nn.Module):
         })
         
         # 水印强度系数
-        self.watermark_strength = 0.1  # 降低水印强度
+        self.watermark_strength = config.WATERMARK_STRENGTH  # 从配置中获取水印强度
     
     def forward(self, x, watermark):
         """
@@ -151,10 +151,10 @@ class Encoder(nn.Module):
         # 5. 拼接所有DWT子带和水印特征
         fused = torch.cat([ll, lh, hl, hh, watermark_feat], dim=1)
         
-        # 5. 残差网络处理
+        # 6. 残差网络处理
         residual = self.residual_blocks(fused)
         
-        # 6. 生成残差图并添加到原始系数，应用水印强度控制
+        # 7. 生成残差图并添加到原始系数，应用水印强度控制
         watermarked_coefficients = {
             'll': ll + self.watermark_strength * self.output_layers['ll'](residual),
             'lh': lh + self.watermark_strength * self.output_layers['lh'](residual),
@@ -215,20 +215,90 @@ class Decoder(nn.Module):
         Returns:
             watermark: 提取的水印，形状为 (B, Cw, Hw, Ww)
         """
-        # 1. 执行DWT变换
-        coefficients = self.dwt(x)
-        ll, lh, hl, hh = coefficients['ll'], coefficients['lh'], coefficients['hl'], coefficients['hh']
+        # 1. 获取水印副本数量
+        grid_size = config.GRID_SIZE
         
-        # 2. 拼接所有DWT子带
-        fused = torch.cat([ll, lh, hl, hh], dim=1)
+        # 2. 输入参数有效性检查
+        if grid_size < 1:
+            raise ValueError("GRID_SIZE must be at least 1")
         
-        # 3. 特征提取
-        features = self.feature_extractor(fused)
+        # 检查图像尺寸
+        b, c, h, w = x.shape
+        if h < grid_size or w < grid_size:
+            raise ValueError("Image size must be larger than GRID_SIZE")
         
-        # 4. 提取水印
-        watermark = self.watermark_output(features)
+        # 3. 如果只需要一个水印副本，使用原始方法
+        if grid_size == 1:
+            # 执行DWT变换
+            coefficients = self.dwt(x)
+            ll, lh, hl, hh = coefficients['ll'], coefficients['lh'], coefficients['hl'], coefficients['hh']
+            
+            # 拼接所有DWT子带
+            fused = torch.cat([ll, lh, hl, hh], dim=1)
+            
+            # 特征提取
+            features = self.feature_extractor(fused)
+            
+            # 提取水印
+            watermark = self.watermark_output(features)
+            
+            return watermark
         
-        return watermark
+        # 3. 多副本水印提取
+        b, c, h, w = x.shape
+        watermarks = []
+        
+        # 计算每个网格的大小（确保所有网格大小一致）
+        grid_h = (h + grid_size - 1) // grid_size
+        grid_w = (w + grid_size - 1) // grid_size
+        
+        # 从每个网格区域提取水印
+        for i in range(grid_size):
+            for j in range(grid_size):
+                if len(watermarks) >= grid_size * grid_size:
+                    break
+                
+                # 计算当前网格的边界
+                start_h = i * grid_h
+                end_h = start_h + grid_h
+                start_w = j * grid_w
+                end_w = start_w + grid_w
+                
+                # 确保边界不超出图像范围
+                end_h = min(end_h, h)
+                end_w = min(end_w, w)
+                
+                # 提取网格区域
+                region = x[:, :, start_h:end_h, start_w:end_w]
+                
+                # 对区域执行DWT变换
+                region_coefficients = self.dwt(region)
+                region_ll, region_lh, region_hl, region_hh = region_coefficients['ll'], region_coefficients['lh'], region_coefficients['hl'], region_coefficients['hh']
+                
+                # 拼接所有DWT子带
+                region_fused = torch.cat([region_ll, region_lh, region_hl, region_hh], dim=1)
+                
+                # 特征提取
+                region_features = self.feature_extractor(region_fused)
+                
+                # 提取水印
+                region_watermark = self.watermark_output(region_features)
+                watermarks.append(region_watermark)
+            
+        
+        # 4. 融合多个水印副本
+        if watermarks:
+            # 计算所有水印副本的平均值
+            fused_watermark = torch.mean(torch.stack(watermarks), dim=0)
+            return fused_watermark
+        else:
+            # 如果没有提取到水印副本，使用原始方法
+            coefficients = self.dwt(x)
+            ll, lh, hl, hh = coefficients['ll'], coefficients['lh'], coefficients['hl'], coefficients['hh']
+            fused = torch.cat([ll, lh, hl, hh], dim=1)
+            features = self.feature_extractor(fused)
+            watermark = self.watermark_output(features)
+            return watermark
 
 class WatermarkModel(nn.Module):
     """
@@ -267,16 +337,79 @@ class WatermarkModel(nn.Module):
         Returns:
             watermarked_image: 含水印图像
         """
-        # 1. 嵌入水印到DWT系数
-        watermarked_coefficients = self.encoder(cover_image, watermark)
+        # 1. 获取水印副本数量
+        grid_size = config.GRID_SIZE
         
-        # 2. IDWT逆变换得到含水印图像
-        watermarked_image = self.idwt(watermarked_coefficients)
+        # 2. 输入参数有效性检查
+        if grid_size < 1:
+            raise ValueError("GRID_SIZE must be at least 1")
         
-        # 3. 裁剪到原始尺寸并归一化
-        watermarked_image = torch.clamp(watermarked_image, 0, 1)
+        # 检查图像尺寸
+        b, c, h, w = cover_image.shape
+        if h < grid_size or w < grid_size:
+            raise ValueError("Image size must be larger than GRID_SIZE")
         
-        return watermarked_image
+        # 3. 如果只需要一个水印副本，使用原始方法
+        if grid_size == 1:
+            # 嵌入水印到DWT系数
+            watermarked_coefficients = self.encoder(cover_image, watermark)
+            
+            # IDWT逆变换得到含水印图像
+            watermarked_image = self.idwt(watermarked_coefficients)
+            
+            # 裁剪到原始尺寸并归一化
+            watermarked_image = torch.clamp(watermarked_image, 0, 1)
+            
+            return watermarked_image
+        
+        # 3. 多副本水印嵌入
+        b, c, h, w = cover_image.shape
+        watermarked_images = []
+        
+        # 计算每个网格的大小（确保所有网格大小一致）
+        grid_h = (h + grid_size - 1) // grid_size
+        grid_w = (w + grid_size - 1) // grid_size
+        
+        # 对每个网格区域嵌入水印
+        for i in range(grid_size):
+            for j in range(grid_size):
+                if len(watermarked_images) >= grid_size * grid_size:
+                    break
+                
+                # 计算当前网格的边界
+                start_h = i * grid_h
+                end_h = start_h + grid_h
+                start_w = j * grid_w
+                end_w = start_w + grid_w
+                
+                # 确保边界不超出图像范围
+                end_h = min(end_h, h)
+                end_w = min(end_w, w)
+                
+                # 提取网格区域
+                region = cover_image[:, :, start_h:end_h, start_w:end_w]
+                
+                # 对区域嵌入水印
+                region_coefficients = self.encoder(region, watermark)
+                region_watermarked = self.idwt(region_coefficients)
+                region_watermarked = torch.clamp(region_watermarked, 0, 1)
+                
+                # 创建完整大小的图像，只在对应区域嵌入水印
+                full_image = cover_image.clone()
+                full_image[:, :, start_h:end_h, start_w:end_w] = region_watermarked
+                
+                watermarked_images.append(full_image)
+            
+        
+        # 4. 融合多个水印图像
+        if watermarked_images:
+            # 计算所有水印图像的平均值
+            fused_image = torch.mean(torch.stack(watermarked_images), dim=0)
+            fused_image = torch.clamp(fused_image, 0, 1)
+            return fused_image
+        else:
+            # 如果没有嵌入水印副本，使用原始图像
+            return cover_image
     
     def extract(self, watermarked_image):
         """

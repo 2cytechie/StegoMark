@@ -226,7 +226,7 @@ def main():
     try:
         # 配置
         watermark_type = 'image'  # 'image' 或 'text'
-        checkpoint_path = os.path.join(config.CHECKPOINT_DIR, f"model_{watermark_type}_epoch_1.pth")
+        checkpoint_path = os.path.join(config.CHECKPOINT_DIR, f"model_{watermark_type}_epoch_60.pth")
         
         # 创建测试器
         tester = WatermarkTester(watermark_type=watermark_type, checkpoint_path=checkpoint_path)

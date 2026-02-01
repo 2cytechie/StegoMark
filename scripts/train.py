@@ -144,8 +144,29 @@ def train():
     # 对抗性训练器
     trainer = AdversarialTrainer(model, optimizer, criterion)
     
+    # 加载模型
+    start_epoch = 0
+    if config.RESUME and config.RESUME_CHECKPOINT:
+        if os.path.exists(config.RESUME_CHECKPOINT):
+            print(f"Loading checkpoint from {config.RESUME_CHECKPOINT}")
+            checkpoint = torch.load(config.RESUME_CHECKPOINT, map_location=device)
+            
+            # 加载模型状态
+            model.load_state_dict(checkpoint['model_state_dict'])
+            
+            # 加载优化器状态
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+            # 加载训练状态
+            start_epoch = checkpoint['epoch'] + 1
+            
+            print(f"Resuming training from epoch {start_epoch}")
+        else:
+            print(f"Checkpoint file not found: {config.RESUME_CHECKPOINT}")
+            print("Starting training from scratch")
+    
     # 训练循环
-    for epoch in range(config.EPOCHS):
+    for epoch in range(start_epoch, config.EPOCHS):
         print(f"Epoch {epoch+1}/{config.EPOCHS}")
         
         # 训练

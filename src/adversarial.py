@@ -303,7 +303,12 @@ class AdversarialTrainer:
         extracted_watermarks = self.model.extract(noisy_images)
         
         # 4. 计算损失
-        loss = self.criterion(extracted_watermarks, watermarks)
+        # 水印提取损失
+        extraction_loss = self.criterion(extracted_watermarks, watermarks)
+        # 图像质量保持损失
+        quality_loss = self.criterion(watermarked_images, cover_images)
+        # 组合损失，调整权重平衡
+        loss = extraction_loss + 10.0 * quality_loss
         
         # 5. 反向传播
         loss.backward()
@@ -335,7 +340,12 @@ class AdversarialTrainer:
         extracted_watermarks = self.model.extract(adversarial_images)
         
         # 4. 计算损失
-        loss = self.criterion(extracted_watermarks, watermarks)
+        # 水印提取损失
+        extraction_loss = self.criterion(extracted_watermarks, watermarks)
+        # 图像质量保持损失
+        quality_loss = self.criterion(watermarked_images, cover_images)
+        # 组合损失，调整权重平衡
+        loss = extraction_loss + 10.0 * quality_loss
         
         # 5. 反向传播
         loss.backward()

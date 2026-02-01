@@ -27,10 +27,10 @@ class Config:
     ENCODER_CHANNELS = [64, 128, 256, 512]
     DECODER_CHANNELS = [512, 256, 128, 64]
     BATCH_SIZE = 24                  # 批次大小
-    EPOCHS = 60                      # 训练次数
+    EPOCHS = 5                     # 训练次数
     LEARNING_RATE = 1e-4            # 学习率
     WEIGHT_DECAY = 1e-5             # 权重衰减
-    SAVE_INTERVAL = 3               # 保存模型间隔（个epoch）
+    SAVE_INTERVAL = 5              # 保存模型间隔（个epoch）
     
     # 对抗性训练配置
     ADVERSARIAL_TRAINING = True     # 是否开启对抗性训练
@@ -51,6 +51,10 @@ class Config:
     
     # 设备配置
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    # 模型加载配置
+    RESUME = False                 # 是否从checkpoint继续训练
+    RESUME_CHECKPOINT = 'checkpoints/model_image_epoch_10.pth'          # 要加载的checkpoint路径
 
 # 创建全局配置实例
 config = Config()

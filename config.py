@@ -10,7 +10,7 @@ class Config:
     VAL_DIR = 'data/val'
     
     # 图像配置
-    IMAGE_SIZE = 512  # 载体图像尺寸
+    IMAGE_SIZE = 256  # 载体图像尺寸
     WATERMARK_SIZE = 64  # 水印尺寸
     IMAGE_CHANNELS = 3  # 彩色图像
     
@@ -26,7 +26,7 @@ class Config:
     TRAIN_TYPE = 'image'            # 训练类型（image或text）
     ENCODER_CHANNELS = [64, 128, 256, 512]
     DECODER_CHANNELS = [512, 256, 128, 64]
-    BATCH_SIZE = 20                 # 批次大小
+    BATCH_SIZE = 16                 # 批次大小
     EPOCHS = 10                     # 训练次数
     LEARNING_RATE = 1e-4            # 学习率
     WEIGHT_DECAY = 1e-5             # 权重衰减

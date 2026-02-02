@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import random
 from config import config
 from src.dwt import DWTLayer, IDWTLayer
 
@@ -112,7 +113,7 @@ class Encoder(nn.Module):
         })
         
         # 水印强度系数
-        self.watermark_strength = config.WATERMARK_STRENGTH  # 从配置中获取水印强度
+        self.watermark_strength = random.uniform(0.01, config.WATERMARK_STRENGTH)  # 从配置中获取水印强度
     
     def forward(self, x, watermark):
         """

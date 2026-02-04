@@ -23,7 +23,7 @@ class Config:
     WATERMARK_MODEL = 'best_model_image.pth'    # 水印模型路径
     TEXT_WATERMARK_LENGTH = 64      # 文本水印长度（bits）
     WATERMARK_STRENGTH = 0.05       # 平衡水印强度以获得更好的PSNR和提取准确率
-    GRID_SIZE = 2                   # 水印网格大小（GRID_SIZE^2 = WATERMARK_COPIES），用于抗裁剪攻击
+    GRID_SIZE = 4                   # 水印网格大小（GRID_SIZE^2 = WATERMARK_COPIES），用于抗裁剪攻击
     
     # 模型配置
     TRAIN_TYPE = 'image'            # 训练类型（image或text）

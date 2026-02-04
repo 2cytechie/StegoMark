@@ -22,31 +22,31 @@ class Config:
     WATERMARK_TYPES = 'image'       # image 或 text
     WATERMARK_MODEL = 'best_model_image.pth'    # 水印模型路径
     TEXT_WATERMARK_LENGTH = 64      # 文本水印长度（bits）
-    WATERMARK_STRENGTH = 0.05       # 平衡水印强度以获得更好的PSNR和提取准确率
-    GRID_SIZE = 4                   # 水印网格大小（GRID_SIZE^2 = WATERMARK_COPIES），用于抗裁剪攻击
+    WATERMARK_STRENGTH = 0.05       # 降低水印强度以提高PSNR，同时保持足够的鲁棒性
+    GRID_SIZE = 4                   # 减少水印网格大小，降低计算复杂度，同时保持抗裁剪能力
     
     # 模型配置
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
     RESUME = False                 # 是否从检查点恢复训练
     RESUME_CHECKPOINT = 'checkpoints/best_model_image.pth'          # 要加载的checkpoint路径
     TRAIN_TYPE = 'image'            # 训练类型（image或text）
-    ENCODER_CHANNELS = [64, 128, 256, 512]
-    DECODER_CHANNELS = [512, 256, 128, 64]
-    BATCH_SIZE = 16                 # 批次大小
-    EPOCHS = 100                    # 训练次数
-    LEARNING_RATE = 1e-4            # 学习率
-    WEIGHT_DECAY = 1e-5             # 权重衰减
-    SAVE_INTERVAL = 10              # 保存模型间隔（个epoch）
+    ENCODER_CHANNELS = [32, 64, 128, 256]  # 调整为优化后的通道数
+    DECODER_CHANNELS = [256, 128, 64, 32]  # 调整为优化后的通道数
+    BATCH_SIZE = 6                  # 增加批次大小，提高训练稳定性和速度
+    EPOCHS = 100                    # 增加训练轮数，确保模型充分收敛
+    LEARNING_RATE = 2e-4            # 适当提高学习率，加快初始收敛
+    WEIGHT_DECAY = 1e-4             # 增大权重衰减，增强正则化效果
+    SAVE_INTERVAL = 10              # 保存间隔
     
     # 早停配置
     EARLY_STOPPING = True           # 是否启用早停
-    EARLY_STOPPING_PATIENCE = 15    # 增加早停 patience
-    EARLY_STOPPING_DELTA = 1e-5     # 增大早停 delta以容忍更小的损失波动
+    EARLY_STOPPING_PATIENCE = 20    # 增加早停 patience，给模型更多收敛时间
+    EARLY_STOPPING_DELTA = 5e-6     # 减小早停 delta，对性能提升更敏感
     
     # 学习率调度器配置
     LR_SCHEDULER_TYPE = 'cosine'    # 学习率调度器类型：cosine, step
-    LR_GAMMA = 0.5                  # 学习率衰减因子（减小衰减幅度）
-    LR_STEP_SIZE = 15               # 阶梯式调度器的步长（增加步长）
+    LR_GAMMA = 0.3                  # 适当增大衰减因子，加快后期收敛
+    LR_STEP_SIZE = 20               # 增加阶梯式调度器的步长，减少学习率调整频率
     
     # 微调配置
     FINETUNE_LR = 1e-5              # 微调学习率
@@ -67,6 +67,7 @@ class Config:
     # 评估配置
     PSNR_THRESHOLD = 30.0           # PSNR阈值
     SSIM_THRESHOLD = 0.95           # SSIM阈值
+    ACCURACY_THRESHOLD = 0.9        # 提取准确率阈值
     
     # 路径配置
     CHECKPOINT_DIR = 'checkpoints'  # 模型检查点目录

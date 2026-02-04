@@ -25,12 +25,15 @@ class WatermarkLoss(nn.Module):
             transform_weight: 几何变换损失权重
         """
         super(WatermarkLoss, self).__init__()
-        self.embedding_weight = embedding_weight
-        self.extraction_weight = extraction_weight
-        self.ssim_weight = ssim_weight
-        self.transform_weight = transform_weight
+        self.initial_embedding_weight = embedding_weight
+        self.initial_extraction_weight = extraction_weight
+        self.initial_ssim_weight = ssim_weight
+        self.initial_transform_weight = transform_weight
         self.mse_loss = nn.MSELoss()
         self.bce_loss = nn.BCELoss()
+        self.current_epoch = 0  # 当前epoch
+        self.psnr_history = []  # PSNR历史记录
+        self.accuracy_history = []  # 准确率历史记录
     
     def ssim_loss(self, x, y):
         """
@@ -47,14 +50,17 @@ class WatermarkLoss(nn.Module):
         C1 = (0.01 * 1.0) ** 2
         C2 = (0.03 * 1.0) ** 2
         
-        mu_x = nn.functional.avg_pool2d(x, 3, 1, 1)
-        mu_y = nn.functional.avg_pool2d(y, 3, 1, 1)
+        # 使用更大的卷积核尺寸，提高SSIM计算的准确性
+        mu_x = nn.functional.avg_pool2d(x, 5, 1, 2)
+        mu_y = nn.functional.avg_pool2d(y, 5, 1, 2)
         
-        sigma_x = nn.functional.avg_pool2d(x ** 2, 3, 1, 1) - mu_x ** 2
-        sigma_y = nn.functional.avg_pool2d(y ** 2, 3, 1, 1) - mu_y ** 2
-        sigma_xy = nn.functional.avg_pool2d(x * y, 3, 1, 1) - mu_x * mu_y
+        sigma_x = nn.functional.avg_pool2d(x ** 2, 5, 1, 2) - mu_x ** 2
+        sigma_y = nn.functional.avg_pool2d(y ** 2, 5, 1, 2) - mu_y ** 2
+        sigma_xy = nn.functional.avg_pool2d(x * y, 5, 1, 2) - mu_x * mu_y
         
-        ssim_map = ((2 * mu_x * mu_y + C1) * (2 * sigma_xy + C2)) / ((mu_x ** 2 + mu_y ** 2 + C1) * (sigma_x + sigma_y + C2))
+        # 稳定性改进，添加小的epsilon
+        epsilon = 1e-8
+        ssim_map = ((2 * mu_x * mu_y + C1) * (2 * sigma_xy + C2)) / ((mu_x ** 2 + mu_y ** 2 + C1) * (sigma_x + sigma_y + C2 + epsilon))
         ssim_loss = 1 - ssim_map.mean()
         
         return ssim_loss
@@ -88,13 +94,81 @@ class WatermarkLoss(nn.Module):
         if transform_params is not None and target_transform_params is not None:
             transform_loss = self.mse_loss(transform_params, target_transform_params)
         
+        # 动态权重调整
+        # 根据epoch调整权重
+        epoch_factor = min(self.current_epoch / 50, 1.0)  # 前50个epoch逐渐调整
+        
+        # 基本权重
+        embedding_weight = self.initial_embedding_weight
+        extraction_weight = self.initial_extraction_weight
+        ssim_weight = self.initial_ssim_weight
+        transform_weight = self.initial_transform_weight
+        
+        # 根据训练进度调整权重
+        if self.current_epoch < 10:
+            # 前10个epoch，优先保证图像质量
+            embedding_weight = 2.0
+            extraction_weight = 0.5
+        elif self.current_epoch < 30:
+            # 10-30个epoch，平衡图像质量和水印提取
+            embedding_weight = 1.5
+            extraction_weight = 1.0
+        else:
+            # 30个epoch后，优先保证水印提取
+            embedding_weight = 1.0
+            extraction_weight = 1.5
+        
+        # 根据PSNR历史调整权重
+        if len(self.psnr_history) > 5:
+            recent_psnr = sum(self.psnr_history[-5:]) / 5
+            if recent_psnr < 30.0:
+                # PSNR较低，增加嵌入损失权重
+                embedding_weight *= 1.2
+                ssim_weight *= 1.2
+            elif recent_psnr > 35.0:
+                # PSNR较高，减少嵌入损失权重
+                embedding_weight *= 0.8
+                extraction_weight *= 1.2
+        
+        # 根据准确率历史调整权重
+        if len(self.accuracy_history) > 5:
+            recent_accuracy = sum(self.accuracy_history[-5:]) / 5
+            if recent_accuracy < 0.8:
+                # 准确率较低，增加提取损失权重
+                extraction_weight *= 1.2
+            elif recent_accuracy > 0.95:
+                # 准确率较高，减少提取损失权重
+                extraction_weight *= 0.8
+                embedding_weight *= 1.2
+        
         # 总损失
-        total_loss = (self.embedding_weight * embedding_loss + 
-                     self.ssim_weight * ssim_loss_val + 
-                     self.extraction_weight * extraction_loss +
-                     self.transform_weight * transform_loss)
+        total_loss = (embedding_weight * embedding_loss + 
+                     ssim_weight * ssim_loss_val + 
+                     extraction_weight * extraction_loss +
+                     transform_weight * transform_loss)
+        
+        # 更新epoch计数器
+        self.current_epoch += 1
         
         return total_loss
+    
+    def update_history(self, psnr_value, accuracy_value):
+        """
+        更新PSNR和准确率历史记录
+        
+        Args:
+            psnr_value: 当前PSNR值
+            accuracy_value: 当前准确率值
+        """
+        self.psnr_history.append(psnr_value)
+        self.accuracy_history.append(accuracy_value)
+        
+        # 保持历史记录长度在合理范围内
+        max_history_length = 20
+        if len(self.psnr_history) > max_history_length:
+            self.psnr_history = self.psnr_history[-max_history_length:]
+        if len(self.accuracy_history) > max_history_length:
+            self.accuracy_history = self.accuracy_history[-max_history_length:]
 
 class NoiseLayer(nn.Module):
     """
@@ -450,7 +524,9 @@ class AdversarialTrainer:
         self.noise_layer = NoiseLayer()
         self.attack_strength = 0.1  # 初始攻击强度
         self.max_attack_strength = 1.0  # 最大攻击强度
-        self.strength_growth_rate = 0.05  # 每次迭代的强度增长速率
+        self.strength_growth_rate = 0.02  # 每次迭代的强度增长速率
+        self.current_epoch = 0  # 当前epoch
+        self.epoch_growth_factor = 1.1  # 每个epoch的攻击强度增长因子
     
     def train_epoch(self, train_loader, attack_training=False):
         """
@@ -469,6 +545,26 @@ class AdversarialTrainer:
         total_psnr = 0
         total_samples = 0
         
+        # 每个epoch开始时，根据epoch调整攻击强度
+        if attack_training:
+            # 基于epoch的攻击强度调度
+            self.attack_strength = min(0.1 * (self.epoch_growth_factor ** self.current_epoch), self.max_attack_strength)
+            print(f"Current attack strength: {self.attack_strength:.3f}")
+        
+        # 动态选择攻击类型，随着训练进行增加攻击类型
+        if attack_training:
+            if self.current_epoch < 10:
+                # 前10个epoch只使用简单攻击
+                attack_types = ['gaussian']
+            elif self.current_epoch < 30:
+                # 10-30个epoch使用中等攻击
+                attack_types = ['gaussian', 'jpeg']
+            else:
+                # 30个epoch后使用全部攻击
+                attack_types = ['gaussian', 'jpeg', 'crop', 'blur', 'rotate', 'scale']
+        else:
+            attack_types = []
+        
         for images, watermarks in tqdm(train_loader, desc="Training"):
             images = images.to(self.model.device)
             watermarks = watermarks.to(self.model.device)
@@ -478,9 +574,9 @@ class AdversarialTrainer:
             
             # 应用噪声层
             if attack_training:
-                # 动态调整攻击强度
-                noisy_images, attack_params = self.noise_layer(watermarked_images)
-                # 增加攻击强度
+                # 动态调整攻击强度和类型
+                noisy_images, attack_params = self.noise_layer(watermarked_images, attack_types)
+                # 每次迭代增加攻击强度
                 self.attack_strength = min(self.attack_strength + self.strength_growth_rate, self.max_attack_strength)
             else:
                 noisy_images = watermarked_images
@@ -520,6 +616,10 @@ class AdversarialTrainer:
         
         avg_loss = total_loss / total_samples
         avg_psnr = total_psnr / total_samples
+        
+        # 更新epoch计数器
+        self.current_epoch += 1
+        
         return avg_loss, avg_psnr
     
     def validate(self, val_loader):

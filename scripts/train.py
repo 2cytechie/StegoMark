@@ -242,7 +242,7 @@ def train(finetune=False, finetune_checkpoint=None):
         # 使用AdamW优化器，调整β参数
         optimizer = optim.AdamW(model.parameters(), lr=learning_rate, 
                                weight_decay=config.WEIGHT_DECAY, 
-                               betas=(0.9, 0.999))
+                               betas=(0.9, 0.99))
         
         # 使用改进的WatermarkLoss损失函数
         from src.adversarial import WatermarkLoss
@@ -310,6 +310,10 @@ def train(finetune=False, finetune_checkpoint=None):
             visualizer.update(train_loss=train_loss, train_psnr=train_psnr,
                            val_loss=val_loss, val_accuracy=val_accuracy,
                            val_psnr=val_psnr, lr=optimizer.param_groups[0]['lr'])
+            
+            # 更新损失函数的历史记录
+            if isinstance(criterion, WatermarkLoss):
+                criterion.update_history(val_psnr, val_accuracy)
             
             # 更新学习率
             if scheduler:

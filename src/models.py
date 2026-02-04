@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import random
+import math
 from config import config
 from src.dwt import DWTLayer, IDWTLayer
 
@@ -100,6 +102,8 @@ class Encoder(nn.Module):
         self.residual_blocks = nn.Sequential(
             ResidualBlock(input_channels, 256),
             ResidualBlock(256, 256),
+            ResidualBlock(256, 256),
+            ResidualBlock(256, 256),
             ResidualBlock(256, 256)
         )
         
@@ -112,7 +116,7 @@ class Encoder(nn.Module):
         })
         
         # 水印强度系数
-        self.watermark_strength = config.WATERMARK_STRENGTH  # 从配置中获取水印强度
+        self.watermark_strength = random.uniform(0.01, config.WATERMARK_STRENGTH)  # 从配置中获取水印强度
     
     def forward(self, x, watermark):
         """
@@ -167,7 +171,7 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     """
     水印提取解码器网络
-    从含水印图像中提取水印信息
+    从含水印图像中提取水印信息，支持几何变换参数估计与校正
     """
     
     def __init__(self, in_channels=config.IMAGE_CHANNELS, watermark_channels=1, device=None):
@@ -183,13 +187,95 @@ class Decoder(nn.Module):
         
         # DWT变换层
         self.dwt = DWTLayer(device=device)
+        self.device = device
         
-        # 特征提取网络
-        self.feature_extractor = nn.Sequential(
-            nn.Conv2d(in_channels * 4, 256, kernel_size=3, padding=1),  # 4个DWT子带
+        # 几何变换参数估计模块（增强版）
+        self.transform_estimator = nn.Sequential(
+            nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3),
             nn.ReLU(),
-            ResidualBlock(256, 256),
-            ResidualBlock(256, 256),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+            ResidualBlock(64, 128),
+            ResidualBlock(128, 256),
+            ResidualBlock(256, 512),
+            ResidualBlock(512, 512),
+            ResidualBlock(512, 512),
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Flatten(),
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 5)  # 5个参数：旋转角度、缩放比例、水平平移、垂直平移、裁剪比例
+        )
+        
+        # 注意力机制模块 - CBAM (Convolutional Block Attention Module)
+        class AttentionBlock(nn.Module):
+            def __init__(self, in_channels, reduction=16):
+                super(AttentionBlock, self).__init__()
+                
+                # 通道注意力模块
+                self.channel_attention = nn.Sequential(
+                    nn.AdaptiveAvgPool2d(1),
+                    nn.Conv2d(in_channels, in_channels // reduction, kernel_size=1, bias=False),
+                    nn.ReLU(),
+                    nn.Conv2d(in_channels // reduction, in_channels, kernel_size=1, bias=False),
+                    nn.Sigmoid()
+                )
+                
+                # 空间注意力模块
+                self.spatial_attention = nn.Sequential(
+                    nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False),
+                    nn.Sigmoid()
+                )
+                
+            def forward(self, x):
+                # 通道注意力
+                ca = self.channel_attention(x)
+                x = x * ca
+                
+                # 空间注意力
+                avg_out = torch.mean(x, dim=1, keepdim=True)
+                max_out, _ = torch.max(x, dim=1, keepdim=True)
+                sa_input = torch.cat([avg_out, max_out], dim=1)
+                sa = self.spatial_attention(sa_input)
+                x = x * sa
+                
+                return x
+        
+        # 多尺度特征提取网络
+        self.feature_extractor = nn.ModuleList([
+            # 浅层特征（高分辨率）
+            nn.Sequential(
+                nn.Conv2d(in_channels * 4, 64, kernel_size=3, padding=1),
+                nn.ReLU(),
+                ResidualBlock(64, 64),
+                ResidualBlock(64, 64),
+                AttentionBlock(64)
+            ),
+            # 中层特征
+            nn.Sequential(
+                nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
+                nn.ReLU(),
+                ResidualBlock(128, 128),
+                ResidualBlock(128, 128),
+                AttentionBlock(128)
+            ),
+            # 深层特征（低分辨率）
+            nn.Sequential(
+                nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
+                nn.ReLU(),
+                ResidualBlock(256, 256),
+                ResidualBlock(256, 256),
+                ResidualBlock(256, 256),
+                ResidualBlock(256, 256),
+                AttentionBlock(256)
+            )
+        ])
+        
+        # 特征融合网络
+        self.feature_fusion = nn.Sequential(
+            nn.Conv2d(64 + 128 + 256, 256, kernel_size=3, padding=1),
+            nn.ReLU(),
             ResidualBlock(256, 128),
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
             ResidualBlock(128, 64),
@@ -205,6 +291,70 @@ class Decoder(nn.Module):
             nn.Sigmoid()  # 输出0-1范围
         )
     
+    def estimate_transform(self, x):
+        """
+        估计几何变换参数
+        
+        Args:
+            x: 输入图像张量
+            
+        Returns:
+            transform_params: 估计的几何变换参数 (旋转角度, 缩放比例, 水平平移, 垂直平移, 裁剪比例)
+        """
+        params = self.transform_estimator(x)
+        # 归一化参数到合理范围
+        rotation = params[:, 0] * config.MAX_ROTATION_ANGLE  # 旋转角度: -90°至90°
+        scale = params[:, 1] * (config.MAX_SCALE - config.MIN_SCALE) + config.MIN_SCALE  # 缩放比例: 0.5至2.0
+        tx = params[:, 2] * 0.2  # 水平平移: -0.2至0.2（归一化坐标）
+        ty = params[:, 3] * 0.2  # 垂直平移: -0.2至0.2（归一化坐标）
+        crop_ratio = params[:, 4] * (config.MAX_CROP_RATIO - config.MIN_CROP_RATIO) + config.MIN_CROP_RATIO  # 裁剪比例: 0.5至0.9
+        
+        return rotation, scale, tx, ty, crop_ratio
+    
+    def apply_inverse_transform(self, x, rotation, scale, tx, ty, crop_ratio):
+        """
+        应用逆几何变换恢复图像
+        
+        Args:
+            x: 输入图像张量
+            rotation: 旋转角度
+            scale: 缩放比例
+            tx: 水平平移
+            ty: 垂直平移
+            crop_ratio: 裁剪比例
+            
+        Returns:
+            restored_x: 恢复后的图像张量
+        """
+        b, c, h, w = x.shape
+        
+        # 创建逆旋转矩阵
+        theta = -rotation * math.pi / 180  # 取负角度进行逆旋转
+        cos_theta = torch.cos(theta)
+        sin_theta = torch.sin(theta)
+        
+        # 创建逆缩放矩阵
+        inv_scale = 1.0 / scale
+        
+        # 创建逆平移
+        inv_tx = -tx
+        inv_ty = -ty
+        
+        # 构建仿射变换矩阵
+        transform = torch.zeros(b, 2, 3, device=self.device)
+        transform[:, 0, 0] = cos_theta * inv_scale
+        transform[:, 0, 1] = -sin_theta * inv_scale
+        transform[:, 0, 2] = inv_tx
+        transform[:, 1, 0] = sin_theta * inv_scale
+        transform[:, 1, 1] = cos_theta * inv_scale
+        transform[:, 1, 2] = inv_ty
+        
+        # 应用逆变换
+        grid = F.affine_grid(transform, x.size(), align_corners=False)
+        restored_x = F.grid_sample(x, grid, mode='bilinear', padding_mode='zeros', align_corners=False)
+        
+        return restored_x
+    
     def forward(self, x):
         """
         前向传播
@@ -215,37 +365,51 @@ class Decoder(nn.Module):
         Returns:
             watermark: 提取的水印，形状为 (B, Cw, Hw, Ww)
         """
-        # 1. 获取水印副本数量
+        # 1. 几何变换参数估计与校正
+        rotation, scale, tx, ty, crop_ratio = self.estimate_transform(x)
+        restored_x = self.apply_inverse_transform(x, rotation, scale, tx, ty, crop_ratio)
+        
+        # 2. 获取水印副本数量
         grid_size = config.GRID_SIZE
         
-        # 2. 输入参数有效性检查
+        # 3. 输入参数有效性检查
         if grid_size < 1:
             raise ValueError("GRID_SIZE must be at least 1")
         
         # 检查图像尺寸
-        b, c, h, w = x.shape
+        b, c, h, w = restored_x.shape
         if h < grid_size or w < grid_size:
             raise ValueError("Image size must be larger than GRID_SIZE")
         
-        # 3. 如果只需要一个水印副本，使用原始方法
+        # 4. 如果只需要一个水印副本，使用原始方法
         if grid_size == 1:
             # 执行DWT变换
-            coefficients = self.dwt(x)
+            coefficients = self.dwt(restored_x)
             ll, lh, hl, hh = coefficients['ll'], coefficients['lh'], coefficients['hl'], coefficients['hh']
             
             # 拼接所有DWT子带
             fused = torch.cat([ll, lh, hl, hh], dim=1)
             
-            # 特征提取
-            features = self.feature_extractor(fused)
+            # 多尺度特征提取
+            features1 = self.feature_extractor[0](fused)
+            features2 = self.feature_extractor[1](features1)
+            features3 = self.feature_extractor[2](features2)
+            
+            # 调整特征尺寸以进行融合
+            features2_upsampled = F.interpolate(features2, size=features1.shape[2:], mode='bilinear', align_corners=True)
+            features3_upsampled = F.interpolate(features3, size=features1.shape[2:], mode='bilinear', align_corners=True)
+            
+            # 特征融合
+            fused_features = torch.cat([features1, features2_upsampled, features3_upsampled], dim=1)
+            features = self.feature_fusion(fused_features)
             
             # 提取水印
             watermark = self.watermark_output(features)
             
             return watermark
         
-        # 3. 多副本水印提取
-        b, c, h, w = x.shape
+        # 5. 多副本水印提取
+        b, c, h, w = restored_x.shape
         watermarks = []
         
         # 计算每个网格的大小（确保所有网格大小一致）
@@ -269,7 +433,7 @@ class Decoder(nn.Module):
                 end_w = min(end_w, w)
                 
                 # 提取网格区域
-                region = x[:, :, start_h:end_h, start_w:end_w]
+                region = restored_x[:, :, start_h:end_h, start_w:end_w]
                 
                 # 对区域执行DWT变换
                 region_coefficients = self.dwt(region)
@@ -278,25 +442,48 @@ class Decoder(nn.Module):
                 # 拼接所有DWT子带
                 region_fused = torch.cat([region_ll, region_lh, region_hl, region_hh], dim=1)
                 
-                # 特征提取
-                region_features = self.feature_extractor(region_fused)
+                # 多尺度特征提取
+                region_features1 = self.feature_extractor[0](region_fused)
+                region_features2 = self.feature_extractor[1](region_features1)
+                region_features3 = self.feature_extractor[2](region_features2)
+                
+                # 调整特征尺寸以进行融合
+                region_features2_upsampled = F.interpolate(region_features2, size=region_features1.shape[2:], mode='bilinear', align_corners=True)
+                region_features3_upsampled = F.interpolate(region_features3, size=region_features1.shape[2:], mode='bilinear', align_corners=True)
+                
+                # 特征融合
+                region_fused_features = torch.cat([region_features1, region_features2_upsampled, region_features3_upsampled], dim=1)
+                region_features = self.feature_fusion(region_fused_features)
                 
                 # 提取水印
                 region_watermark = self.watermark_output(region_features)
                 watermarks.append(region_watermark)
             
         
-        # 4. 融合多个水印副本
+        # 6. 融合多个水印副本
         if watermarks:
             # 计算所有水印副本的平均值
             fused_watermark = torch.mean(torch.stack(watermarks), dim=0)
             return fused_watermark
         else:
             # 如果没有提取到水印副本，使用原始方法
-            coefficients = self.dwt(x)
+            coefficients = self.dwt(restored_x)
             ll, lh, hl, hh = coefficients['ll'], coefficients['lh'], coefficients['hl'], coefficients['hh']
             fused = torch.cat([ll, lh, hl, hh], dim=1)
-            features = self.feature_extractor(fused)
+            
+            # 多尺度特征提取
+            features1 = self.feature_extractor[0](fused)
+            features2 = self.feature_extractor[1](features1)
+            features3 = self.feature_extractor[2](features2)
+            
+            # 调整特征尺寸以进行融合
+            features2_upsampled = F.interpolate(features2, size=features1.shape[2:], mode='bilinear', align_corners=True)
+            features3_upsampled = F.interpolate(features3, size=features1.shape[2:], mode='bilinear', align_corners=True)
+            
+            # 特征融合
+            fused_features = torch.cat([features1, features2_upsampled, features3_upsampled], dim=1)
+            features = self.feature_fusion(fused_features)
+            
             watermark = self.watermark_output(features)
             return watermark
 

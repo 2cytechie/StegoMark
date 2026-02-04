@@ -26,10 +26,13 @@ class Config:
     GRID_SIZE = 4                   # 水印网格大小（GRID_SIZE^2 = WATERMARK_COPIES），用于抗裁剪攻击
     
     # 模型配置
+    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+    RESUME = False                 # 是否从检查点恢复训练
+    RESUME_CHECKPOINT = 'checkpoints/best_model_image.pth'          # 要加载的checkpoint路径
     TRAIN_TYPE = 'image'            # 训练类型（image或text）
     ENCODER_CHANNELS = [64, 128, 256, 512]
     DECODER_CHANNELS = [512, 256, 128, 64]
-    BATCH_SIZE = 3                  # 批次大小
+    BATCH_SIZE = 16                 # 批次大小
     EPOCHS = 100                    # 训练次数
     LEARNING_RATE = 1e-4            # 学习率
     WEIGHT_DECAY = 1e-5             # 权重衰减
@@ -41,7 +44,7 @@ class Config:
     EARLY_STOPPING_DELTA = 1e-5     # 增大早停 delta以容忍更小的损失波动
     
     # 学习率调度器配置
-    LR_SCHEDULER_TYPE = 'step'      # 学习率调度器类型：cosine, step
+    LR_SCHEDULER_TYPE = 'cosine'    # 学习率调度器类型：cosine, step
     LR_GAMMA = 0.5                  # 学习率衰减因子（减小衰减幅度）
     LR_STEP_SIZE = 15               # 阶梯式调度器的步长（增加步长）
     
@@ -49,17 +52,17 @@ class Config:
     FINETUNE_LR = 1e-5              # 微调学习率
     
     # 对抗性训练配置
-    ATTACK_TRAINING = False         # 暂时关闭对抗性训练以提高PSNR
-    
+    ATTACK_TRAINING = True          # 暂时关闭对抗性训练以提高PSNR
     # 攻击类型：random, gaussian, jpeg, crop, blur, rotate, scale
     ATTACK_TYPE = ['random']
     ATTACK_TYPE_LEN = 6             # 攻击类型数量
-    GAUSSIAN_NOISE_STD = 0.1        # 高斯噪声标准差
+    GAUSSIAN_NOISE_STD = 0.05       # 高斯噪声标准差
     JPEG_QUALITY = 85               # JPEG压缩质量
-    CROP_SIZE = 225                 # 裁剪尺寸
-    MAX_ROTATION_ANGLE = 180        # 最大旋转角度（度）
-    MIN_SCALE = 0.8                 # 最小缩放比例
-    MAX_SCALE = 1.2                 # 最大缩放比例
+    MIN_CROP_RATIO = 0.5            # 最小裁剪比例（50%）
+    MAX_CROP_RATIO = 0.9            # 最大裁剪比例（90%）
+    MAX_ROTATION_ANGLE = 90         # 最大旋转角度（度），范围：-90°至90°
+    MIN_SCALE = 0.5                 # 最小缩放比例（0.5）
+    MAX_SCALE = 2.0                 # 最大缩放比例（2.0）
     
     # 评估配置
     PSNR_THRESHOLD = 30.0           # PSNR阈值
@@ -69,12 +72,6 @@ class Config:
     CHECKPOINT_DIR = 'checkpoints'  # 模型检查点目录
     OUTPUT_DIR = 'output'           # 输出目录
     
-    # 设备配置
-    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-    
-    # 模型加载配置
-    RESUME = False                 # 禁用恢复，从头开始训练以应用新参数
-    RESUME_CHECKPOINT = 'checkpoints/model_image_epoch_15.pth'          # 要加载的checkpoint路径
 
 # 创建全局配置实例
 config = Config()

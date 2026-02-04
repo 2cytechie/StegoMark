@@ -105,41 +105,58 @@ class WatermarkLoss(nn.Module):
         transform_weight = self.initial_transform_weight
         
         # 根据训练进度调整权重
-        if self.current_epoch < 10:
-            # 前10个epoch，优先保证图像质量
-            embedding_weight = 2.0
+        if self.current_epoch < 15:
+            # 前15个epoch，优先保证图像质量
+            embedding_weight = 2.5
+            ssim_weight = 1.0
             extraction_weight = 0.5
-        elif self.current_epoch < 30:
-            # 10-30个epoch，平衡图像质量和水印提取
+        elif self.current_epoch < 40:
+            # 15-40个epoch，平衡图像质量和水印提取
             embedding_weight = 1.5
+            ssim_weight = 0.8
             extraction_weight = 1.0
         else:
-            # 30个epoch后，优先保证水印提取
+            # 40个epoch后，优先保证水印提取
             embedding_weight = 1.0
-            extraction_weight = 1.5
+            ssim_weight = 0.5
+            extraction_weight = 2.0
         
         # 根据PSNR历史调整权重
         if len(self.psnr_history) > 5:
             recent_psnr = sum(self.psnr_history[-5:]) / 5
             if recent_psnr < 30.0:
-                # PSNR较低，增加嵌入损失权重
-                embedding_weight *= 1.2
-                ssim_weight *= 1.2
+                # PSNR较低，显著增加嵌入损失权重
+                embedding_weight *= 1.5
+                ssim_weight *= 1.5
             elif recent_psnr > 35.0:
-                # PSNR较高，减少嵌入损失权重
-                embedding_weight *= 0.8
-                extraction_weight *= 1.2
+                # PSNR较高，适度减少嵌入损失权重
+                embedding_weight *= 0.7
+                extraction_weight *= 1.3
         
         # 根据准确率历史调整权重
         if len(self.accuracy_history) > 5:
             recent_accuracy = sum(self.accuracy_history[-5:]) / 5
-            if recent_accuracy < 0.8:
-                # 准确率较低，增加提取损失权重
-                extraction_weight *= 1.2
-            elif recent_accuracy > 0.95:
-                # 准确率较高，减少提取损失权重
+            if recent_accuracy < 0.7:
+                # 准确率较低，显著增加提取损失权重
+                extraction_weight *= 1.5
+            elif recent_accuracy > 0.9:
+                # 准确率较高，适度减少提取损失权重
                 extraction_weight *= 0.8
                 embedding_weight *= 1.2
+        
+        # 损失值归一化，确保不同损失分量的尺度一致
+        embedding_loss_norm = embedding_loss / (embedding_loss + extraction_loss + 1e-8)
+        extraction_loss_norm = extraction_loss / (embedding_loss + extraction_loss + 1e-8)
+        
+        # 基于损失值动态调整权重
+        if embedding_loss_norm > 0.7:
+            # 嵌入损失占比过高，减少其权重
+            embedding_weight *= 0.8
+            extraction_weight *= 1.2
+        elif extraction_loss_norm > 0.7:
+            # 提取损失占比过高，减少其权重
+            extraction_weight *= 0.8
+            embedding_weight *= 1.2
         
         # 总损失
         total_loss = (embedding_weight * embedding_loss + 
@@ -528,13 +545,14 @@ class AdversarialTrainer:
         self.current_epoch = 0  # 当前epoch
         self.epoch_growth_factor = 1.1  # 每个epoch的攻击强度增长因子
     
-    def train_epoch(self, train_loader, attack_training=False):
+    def train_epoch(self, train_loader, attack_training=False, mix_method='none'):
         """
         训练一个 epoch
         
         Args:
             train_loader: 训练数据加载器
             attack_training: 是否进行对抗性训练
+            mix_method: 混合数据方法，可选 'none', 'mixup', 'cutmix'
             
         Returns:
             avg_loss: 平均损失
@@ -547,37 +565,62 @@ class AdversarialTrainer:
         
         # 每个epoch开始时，根据epoch调整攻击强度
         if attack_training:
-            # 基于epoch的攻击强度调度
-            self.attack_strength = min(0.1 * (self.epoch_growth_factor ** self.current_epoch), self.max_attack_strength)
+            # 基于epoch的攻击强度调度，使用更平缓的增长曲线
+            self.attack_strength = min(0.1 * (1.05 ** self.current_epoch), self.max_attack_strength)
             print(f"Current attack strength: {self.attack_strength:.3f}")
         
         # 动态选择攻击类型，随着训练进行增加攻击类型
         if attack_training:
-            if self.current_epoch < 10:
-                # 前10个epoch只使用简单攻击
+            if self.current_epoch < 15:
+                # 前15个epoch只使用简单攻击
                 attack_types = ['gaussian']
-            elif self.current_epoch < 30:
-                # 10-30个epoch使用中等攻击
-                attack_types = ['gaussian', 'jpeg']
+            elif self.current_epoch < 40:
+                # 15-40个epoch使用中等攻击
+                attack_types = ['gaussian', 'jpeg', 'blur']
             else:
-                # 30个epoch后使用全部攻击
+                # 40个epoch后使用全部攻击
                 attack_types = ['gaussian', 'jpeg', 'crop', 'blur', 'rotate', 'scale']
         else:
             attack_types = []
+        
+        # 导入mixup和cutmix函数
+        from scripts.train import mixup_data, cutmix_data
+        
+        # 标签平滑参数
+        label_smoothing = 0.1
         
         for images, watermarks in tqdm(train_loader, desc="Training"):
             images = images.to(self.model.device)
             watermarks = watermarks.to(self.model.device)
             
-            # 前向传播
-            watermarked_images, _ = self.model(images, watermarks)
+            # 应用标签平滑
+            # 将硬标签 [0, 1] 转换为软标签 [label_smoothing, 1-label_smoothing]
+            watermarks = watermarks * (1 - label_smoothing) + 0.5 * label_smoothing
+            
+            # 应用MixUp或CutMix
+            if mix_method == 'mixup':
+                mixed_images, watermarks_a, watermarks_b, lam = mixup_data(images, watermarks, alpha=0.4)
+                # 前向传播
+                watermarked_images, _ = self.model(mixed_images, watermarks_a)
+            elif mix_method == 'cutmix':
+                mixed_images, watermarks_a, watermarks_b, lam = cutmix_data(images, watermarks, alpha=0.4)
+                # 前向传播
+                watermarked_images, _ = self.model(mixed_images, watermarks_a)
+            else:
+                # 普通训练
+                mixed_images = images
+                watermarks_a = watermarks
+                watermarks_b = watermarks
+                lam = 1.0
+                # 前向传播
+                watermarked_images, _ = self.model(images, watermarks)
             
             # 应用噪声层
             if attack_training:
                 # 动态调整攻击强度和类型
                 noisy_images, attack_params = self.noise_layer(watermarked_images, attack_types)
                 # 每次迭代增加攻击强度
-                self.attack_strength = min(self.attack_strength + self.strength_growth_rate, self.max_attack_strength)
+                self.attack_strength = min(self.attack_strength + 0.01, self.max_attack_strength)
             else:
                 noisy_images = watermarked_images
                 attack_params = []
@@ -588,16 +631,29 @@ class AdversarialTrainer:
             # 计算损失
             if isinstance(self.criterion, WatermarkLoss):
                 # 使用新的WatermarkLoss
-                loss = self.criterion(watermarked_images, images, extracted_watermarks, watermarks)
+                if mix_method in ['mixup', 'cutmix']:
+                    # 计算混合损失
+                    loss_a = self.criterion(watermarked_images, mixed_images, extracted_watermarks, watermarks_a)
+                    loss_b = self.criterion(watermarked_images, mixed_images, extracted_watermarks, watermarks_b)
+                    loss = lam * loss_a + (1 - lam) * loss_b
+                else:
+                    loss = self.criterion(watermarked_images, images, extracted_watermarks, watermarks)
             else:
                 # 使用传统损失计算方式
-                embedding_loss = self.criterion(watermarked_images, images)
-                extraction_loss = self.criterion(extracted_watermarks, watermarks)
+                embedding_loss = self.criterion(watermarked_images, mixed_images)
+                if mix_method in ['mixup', 'cutmix']:
+                    extraction_loss_a = self.criterion(extracted_watermarks, watermarks_a)
+                    extraction_loss_b = self.criterion(extracted_watermarks, watermarks_b)
+                    extraction_loss = lam * extraction_loss_a + (1 - lam) * extraction_loss_b
+                else:
+                    extraction_loss = self.criterion(extracted_watermarks, watermarks)
                 loss = 1.5 * embedding_loss + extraction_loss  # 增加嵌入损失权重
             
             # 反向传播
             self.optimizer.zero_grad()
             loss.backward()
+            # 梯度裁剪
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.optimizer.step()
             
             # 计算PSNR

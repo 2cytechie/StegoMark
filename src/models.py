@@ -12,7 +12,7 @@ class ResidualBlock(nn.Module):
     用于构建深度神经网络，缓解梯度消失问题
     """
     
-    def __init__(self, in_channels, out_channels, stride=1, dropout_rate=0.1):
+    def __init__(self, in_channels, out_channels, stride=1, dropout_rate=0.3):
         """
         初始化残差块
         
@@ -90,32 +90,47 @@ class Encoder(nn.Module):
         
         # 水印特征处理
         self.watermark_processor = nn.Sequential(
-            nn.Conv2d(watermark_channels, 32, kernel_size=3, padding=1),
+            nn.Conv2d(watermark_channels, 32, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.Dropout(0.3),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.Dropout(0.1),
+            nn.Dropout(0.3),
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(128),
             nn.ReLU(),
-            nn.Dropout(0.1)
+            nn.Dropout(0.3)
         )
         
         # 残差网络
         # 计算实际的输入通道数：4个DWT子带 * 输入通道数 + 水印特征通道数
         input_channels = in_channels * 4 + 128
         self.residual_blocks = nn.Sequential(
-            ResidualBlock(input_channels, 128, dropout_rate=0.1),
-            ResidualBlock(128, 128, dropout_rate=0.1)
+            ResidualBlock(input_channels, 128, dropout_rate=0.3),
+            ResidualBlock(128, 128, dropout_rate=0.3)
         )
         
         # 输出层
         self.output_layers = nn.ModuleDict({
-            'll': nn.Conv2d(128, in_channels, kernel_size=3, padding=1),
-            'lh': nn.Conv2d(128, in_channels, kernel_size=3, padding=1),
-            'hl': nn.Conv2d(128, in_channels, kernel_size=3, padding=1),
-            'hh': nn.Conv2d(128, in_channels, kernel_size=3, padding=1)
+            'll': nn.Sequential(
+                nn.Conv2d(128, in_channels, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(in_channels)
+            ),
+            'lh': nn.Sequential(
+                nn.Conv2d(128, in_channels, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(in_channels)
+            ),
+            'hl': nn.Sequential(
+                nn.Conv2d(128, in_channels, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(in_channels)
+            ),
+            'hh': nn.Sequential(
+                nn.Conv2d(128, in_channels, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(in_channels)
+            )
         })
         
         # 水印强度系数
@@ -194,17 +209,18 @@ class Decoder(nn.Module):
         
         # 几何变换参数估计模块（简化版）
         self.transform_estimator = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=7, stride=2, padding=3),
+            nn.Conv2d(in_channels, 32, kernel_size=7, stride=2, padding=3, bias=False),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.Dropout(0.1),
+            nn.Dropout(0.3),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-            ResidualBlock(32, 64, dropout_rate=0.1),
-            ResidualBlock(64, 128, dropout_rate=0.1),
+            ResidualBlock(32, 64, dropout_rate=0.3),
+            ResidualBlock(64, 128, dropout_rate=0.3),
             nn.AdaptiveAvgPool2d((1, 1)),
             nn.Flatten(),
             nn.Linear(128, 128),
             nn.ReLU(),
-            nn.Dropout(0.1),
+            nn.Dropout(0.3),
             nn.Linear(128, 5)  # 5个参数：旋转角度、缩放比例、水平平移、垂直平移、裁剪比例
         )
         
@@ -246,48 +262,54 @@ class Decoder(nn.Module):
         self.feature_extractor = nn.ModuleList([
             # 浅层特征（高分辨率）
             nn.Sequential(
-                nn.Conv2d(in_channels * 4, 32, kernel_size=3, padding=1),
+                nn.Conv2d(in_channels * 4, 32, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(32),
                 nn.ReLU(),
-                nn.Dropout(0.1),
-                ResidualBlock(32, 32, dropout_rate=0.1),
+                nn.Dropout(0.3),
+                ResidualBlock(32, 32, dropout_rate=0.3),
                 AttentionBlock(32)
             ),
             # 中层特征
             nn.Sequential(
-                nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+                nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1, bias=False),
+                nn.BatchNorm2d(64),
                 nn.ReLU(),
-                nn.Dropout(0.1),
-                ResidualBlock(64, 64, dropout_rate=0.1),
+                nn.Dropout(0.3),
+                ResidualBlock(64, 64, dropout_rate=0.3),
                 AttentionBlock(64)
             ),
             # 深层特征（低分辨率）
             nn.Sequential(
-                nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
+                nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1, bias=False),
+                nn.BatchNorm2d(128),
                 nn.ReLU(),
-                nn.Dropout(0.1),
-                ResidualBlock(128, 128, dropout_rate=0.1),
+                nn.Dropout(0.3),
+                ResidualBlock(128, 128, dropout_rate=0.3),
                 AttentionBlock(128)
             )
         ])
         
         # 特征融合网络
         self.feature_fusion = nn.Sequential(
-            nn.Conv2d(32 + 64 + 128, 128, kernel_size=3, padding=1),
+            nn.Conv2d(32 + 64 + 128, 128, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(128),
             nn.ReLU(),
-            nn.Dropout(0.1),
-            ResidualBlock(128, 64, dropout_rate=0.1),
+            nn.Dropout(0.3),
+            ResidualBlock(128, 64, dropout_rate=0.3),
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-            nn.Dropout(0.1),
-            ResidualBlock(64, 32, dropout_rate=0.1),
+            nn.Dropout(0.3),
+            ResidualBlock(64, 32, dropout_rate=0.3),
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
         )
         
         # 水印输出层
         self.watermark_output = nn.Sequential(
-            nn.Conv2d(32, 16, kernel_size=3, padding=1),
+            nn.Conv2d(32, 16, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(16),
             nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Conv2d(16, watermark_channels, kernel_size=3, padding=1),
+            nn.Dropout(0.3),
+            nn.Conv2d(16, watermark_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(watermark_channels),
             nn.Upsample(size=(64, 64), mode='bilinear', align_corners=True),
             nn.Sigmoid()  # 输出0-1范围
         )

@@ -345,7 +345,7 @@ def main():
         # tester.test_batch_images(target_dir, watermark_list, output_dir)
         
         # 单个测试
-        cover_image = "img/img10.jpg"
+        cover_image = "img/img1.jpg"
         watermark_input = "img/watermark.png" if watermark_type == 'image' else "Test watermark text"
         tester.test_single_image(cover_image, watermark_input, config.OUTPUT_DIR, "test_single_image.png")
         

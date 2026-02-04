@@ -13,6 +13,98 @@ import time
 import io
 import contextlib
 
+# MixUp 实现
+def mixup_data(x, y, alpha=1.0):
+    """
+    生成MixUp数据
+    
+    Args:
+        x: 输入图像
+        y: 输入水印
+        alpha: MixUp参数
+        
+    Returns:
+        mixed_x: 混合后的图像
+        y_a: 原始水印
+        y_b: 混合水印
+        lam: 混合系数
+    """
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1
+    
+    batch_size = x.size()[0]
+    index = torch.randperm(batch_size).to(x.device)
+    
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    return mixed_x, y_a, y_b, lam
+
+# CutMix 实现
+def cutmix_data(x, y, alpha=1.0):
+    """
+    生成CutMix数据
+    
+    Args:
+        x: 输入图像
+        y: 输入水印
+        alpha: CutMix参数
+        
+    Returns:
+        mixed_x: 混合后的图像
+        y_a: 原始水印
+        y_b: 混合水印
+        lam: 混合系数
+    """
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1
+    
+    batch_size = x.size()[0]
+    index = torch.randperm(batch_size).to(x.device)
+    
+    # 生成随机裁剪区域
+    bbx1, bby1, bbx2, bby2 = rand_bbox(x.size(), lam)
+    
+    # 应用裁剪和粘贴
+    x[:, :, bbx1:bbx2, bby1:bby2] = x[index, :, bbx1:bbx2, bby1:bby2]
+    
+    # 调整lambda值
+    lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (x.size()[-1] * x.size()[-2]))
+    
+    y_a, y_b = y, y[index]
+    return x, y_a, y_b, lam
+
+def rand_bbox(size, lam):
+    """
+    生成随机边界框
+    
+    Args:
+        size: 输入尺寸 (B, C, H, W)
+        lam: 混合系数
+        
+    Returns:
+        边界框坐标 (x1, y1, x2, y2)
+    """
+    W = size[2]
+    H = size[3]
+    cut_rat = np.sqrt(1. - lam)
+    cut_w = int(W * cut_rat)
+    cut_h = int(H * cut_rat)
+    
+    # 随机中心点
+    cx = np.random.randint(W)
+    cy = np.random.randint(H)
+    
+    bbx1 = np.clip(cx - cut_w // 2, 0, W)
+    bby1 = np.clip(cy - cut_h // 2, 0, H)
+    bbx2 = np.clip(cx + cut_w // 2, 0, W)
+    bby2 = np.clip(cy + cut_h // 2, 0, H)
+    
+    return bbx1, bby1, bbx2, bby2
+
 class Logger:
     def __init__(self, log_file):
         self.log_file = log_file
@@ -134,6 +226,19 @@ class WatermarkDataset(Dataset):
         # 加载载体图像
         img_path = self.image_paths[idx]
         image = Image.open(img_path).convert('RGB')
+        
+        # 随机裁剪
+        if random.random() > 0.5:
+            # 随机裁剪比例
+            crop_ratio = random.uniform(0.8, 1.0)
+            crop_size = int(config.IMAGE_SIZE * crop_ratio)
+            left = random.randint(0, config.IMAGE_SIZE - crop_size)
+            top = random.randint(0, config.IMAGE_SIZE - crop_size)
+            right = left + crop_size
+            bottom = top + crop_size
+            image = image.crop((left, top, right, bottom))
+        
+        # 调整大小
         image = image.resize((config.IMAGE_SIZE, config.IMAGE_SIZE), Image.LANCZOS)
         
         # 数据增强
@@ -149,18 +254,31 @@ class WatermarkDataset(Dataset):
             image = image.rotate(angle, expand=False)
         if random.random() > 0.5:
             # 随机亮度调整
-            factor = random.uniform(0.8, 1.2)
+            factor = random.uniform(0.7, 1.3)
             image = ImageEnhance.Brightness(image).enhance(factor)
         if random.random() > 0.5:
             # 随机对比度调整
-            factor = random.uniform(0.8, 1.2)
+            factor = random.uniform(0.7, 1.3)
             image = ImageEnhance.Contrast(image).enhance(factor)
         if random.random() > 0.5:
             # 随机饱和度调整
+            factor = random.uniform(0.7, 1.3)
+            image = ImageEnhance.Color(image).enhance(factor)
+        if random.random() > 0.3:
+            # 随机色调调整
             factor = random.uniform(0.8, 1.2)
             image = ImageEnhance.Color(image).enhance(factor)
         
+        # 转换为numpy数组
         image = np.array(image) / 255.0
+        
+        # 添加高斯噪声
+        if random.random() > 0.5:
+            noise_level = random.uniform(0.01, 0.05)
+            noise = np.random.normal(0, noise_level, image.shape)
+            image = np.clip(image + noise, 0, 1)
+        
+        # 转换为张量
         image = torch.tensor(image, dtype=torch.float32).permute(2, 0, 1)
         
         # 加载水印
@@ -250,7 +368,8 @@ def train(finetune=False, finetune_checkpoint=None):
         
         # 学习率调度器
         if config.LR_SCHEDULER_TYPE == 'cosine':
-            scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.EPOCHS)
+            # 使用CosineAnnealingWarmRestarts，设置合适的T_0和T_mult
+            scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-6)
         elif config.LR_SCHEDULER_TYPE == 'step':
             scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=config.LR_STEP_SIZE, gamma=config.LR_GAMMA)
         else:
@@ -299,8 +418,10 @@ def train(finetune=False, finetune_checkpoint=None):
             print(f"Current learning rate: {optimizer.param_groups[0]['lr']:.6f}")
             
             # 训练
-            train_loss, train_psnr = trainer.train_epoch(train_loader, config.ATTACK_TRAINING)
-            print(f"Train Loss: {train_loss:.4f}, Train PSNR: {train_psnr:.2f} dB")
+            # 随机选择使用MixUp、CutMix或普通训练
+            mix_method = random.choice(['none', 'mixup', 'cutmix'])
+            train_loss, train_psnr = trainer.train_epoch(train_loader, config.ATTACK_TRAINING, mix_method=mix_method)
+            print(f"Train Loss: {train_loss:.4f}, Train PSNR: {train_psnr:.2f} dB, Mix Method: {mix_method}")
             
             # 验证
             val_loss, val_accuracy, val_psnr = trainer.validate(val_loader)

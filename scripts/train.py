@@ -4,8 +4,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
-from PIL import Image
+from PIL import Image, ImageEnhance
 import numpy as np
+import random
 from tqdm import tqdm
 import logging
 import time
@@ -134,6 +135,31 @@ class WatermarkDataset(Dataset):
         img_path = self.image_paths[idx]
         image = Image.open(img_path).convert('RGB')
         image = image.resize((config.IMAGE_SIZE, config.IMAGE_SIZE), Image.LANCZOS)
+        
+        # 数据增强
+        if random.random() > 0.5:
+            # 随机水平翻转
+            image = image.transpose(Image.FLIP_LEFT_RIGHT)
+        if random.random() > 0.5:
+            # 随机垂直翻转
+            image = image.transpose(Image.FLIP_TOP_BOTTOM)
+        if random.random() > 0.5:
+            # 随机旋转
+            angle = random.randint(-15, 15)
+            image = image.rotate(angle, expand=False)
+        if random.random() > 0.5:
+            # 随机亮度调整
+            factor = random.uniform(0.8, 1.2)
+            image = ImageEnhance.Brightness(image).enhance(factor)
+        if random.random() > 0.5:
+            # 随机对比度调整
+            factor = random.uniform(0.8, 1.2)
+            image = ImageEnhance.Contrast(image).enhance(factor)
+        if random.random() > 0.5:
+            # 随机饱和度调整
+            factor = random.uniform(0.8, 1.2)
+            image = ImageEnhance.Color(image).enhance(factor)
+        
         image = np.array(image) / 255.0
         image = torch.tensor(image, dtype=torch.float32).permute(2, 0, 1)
         
@@ -213,8 +239,14 @@ def train(finetune=False, finetune_checkpoint=None):
         
         # 优化器和损失函数
         learning_rate = config.FINETUNE_LR if finetune else config.LEARNING_RATE
-        optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=config.WEIGHT_DECAY)
-        criterion = nn.MSELoss()
+        # 使用AdamW优化器，调整β参数
+        optimizer = optim.AdamW(model.parameters(), lr=learning_rate, 
+                               weight_decay=config.WEIGHT_DECAY, 
+                               betas=(0.9, 0.999))
+        
+        # 使用改进的WatermarkLoss损失函数
+        from src.adversarial import WatermarkLoss
+        criterion = WatermarkLoss(embedding_weight=1.5, extraction_weight=1.0)
         
         # 学习率调度器
         if config.LR_SCHEDULER_TYPE == 'cosine':
@@ -227,9 +259,15 @@ def train(finetune=False, finetune_checkpoint=None):
         # 对抗性训练器
         trainer = AdversarialTrainer(model, optimizer, criterion)
         
+        # 初始化可视化工具
+        from src.visualization import TrainingVisualizer
+        visualizer = TrainingVisualizer()
+        
         # 加载模型
         start_epoch = 0
         best_val_loss = float('inf')
+        best_val_accuracy = 0.0
+        best_val_psnr = 0.0
         best_model_path = os.path.join(config.CHECKPOINT_DIR, f"best_model_{watermark_type}.pth")
         patience_counter = 0
         
@@ -268,14 +306,26 @@ def train(finetune=False, finetune_checkpoint=None):
             val_loss, val_accuracy, val_psnr = trainer.validate(val_loader)
             print(f"Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}, Val PSNR: {val_psnr:.2f} dB")
             
+            # 更新可视化工具
+            visualizer.update(train_loss=train_loss, train_psnr=train_psnr,
+                           val_loss=val_loss, val_accuracy=val_accuracy,
+                           val_psnr=val_psnr, lr=optimizer.param_groups[0]['lr'])
+            
             # 更新学习率
             if scheduler:
                 scheduler.step()
             
-            # 早停机制
+            # 综合早停策略（基于多种指标）
             if config.EARLY_STOPPING:
-                if val_loss < best_val_loss - config.EARLY_STOPPING_DELTA:
+                # 计算综合得分
+                current_score = 0.5 * (1.0 / val_loss) + 0.3 * val_accuracy + 0.2 * (val_psnr / 50.0)
+                best_score = 0.5 * (1.0 / best_val_loss) + 0.3 * best_val_accuracy + 0.2 * (best_val_psnr / 50.0)
+                
+                if current_score > best_score + 0.01:  # 0.01 作为阈值
+                    # 更新最佳指标
                     best_val_loss = val_loss
+                    best_val_accuracy = val_accuracy
+                    best_val_psnr = val_psnr
                     patience_counter = 0
                     # 保存最佳模型
                     os.makedirs(config.CHECKPOINT_DIR, exist_ok=True)
@@ -284,7 +334,8 @@ def train(finetune=False, finetune_checkpoint=None):
                         'model_state_dict': model.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                         'loss': val_loss,
-                        'accuracy': val_accuracy
+                        'accuracy': val_accuracy,
+                        'psnr': val_psnr
                     }, best_model_path)
                     print(f"Saved best model to {best_model_path}")
                 else:
@@ -293,6 +344,11 @@ def train(finetune=False, finetune_checkpoint=None):
                     if patience_counter >= config.EARLY_STOPPING_PATIENCE:
                         print("Early stopping triggered!")
                         break
+            
+            # 每次保存绘制一次曲线
+            if (epoch + 1) % config.SAVE_INTERVAL == 0:
+                visualizer.plot_all()
+                print(f"Plotted training curves at epoch {epoch+1}")
             
             # 保存模型
             if (epoch + 1) % config.SAVE_INTERVAL == 0:

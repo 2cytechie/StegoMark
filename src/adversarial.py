@@ -8,6 +8,94 @@ from skimage.metrics import peak_signal_noise_ratio as psnr
 from config import config
 from tqdm import tqdm
 
+class WatermarkLoss(nn.Module):
+    """
+    水印任务专用损失函数
+    结合MSE损失（保持图像质量）、SSIM损失（感知质量）、BCE损失（优化水印提取）和几何变换损失
+    """
+    
+    def __init__(self, embedding_weight=1.0, extraction_weight=1.0, ssim_weight=0.5, transform_weight=0.1):
+        """
+        初始化损失函数
+        
+        Args:
+            embedding_weight: 嵌入损失权重
+            extraction_weight: 提取损失权重
+            ssim_weight: SSIM损失权重
+            transform_weight: 几何变换损失权重
+        """
+        super(WatermarkLoss, self).__init__()
+        self.embedding_weight = embedding_weight
+        self.extraction_weight = extraction_weight
+        self.ssim_weight = ssim_weight
+        self.transform_weight = transform_weight
+        self.mse_loss = nn.MSELoss()
+        self.bce_loss = nn.BCELoss()
+    
+    def ssim_loss(self, x, y):
+        """
+        计算SSIM损失
+        
+        Args:
+            x: 输入张量
+            y: 目标张量
+            
+        Returns:
+            ssim_loss: SSIM损失值
+        """
+        # 计算SSIM
+        C1 = (0.01 * 1.0) ** 2
+        C2 = (0.03 * 1.0) ** 2
+        
+        mu_x = nn.functional.avg_pool2d(x, 3, 1, 1)
+        mu_y = nn.functional.avg_pool2d(y, 3, 1, 1)
+        
+        sigma_x = nn.functional.avg_pool2d(x ** 2, 3, 1, 1) - mu_x ** 2
+        sigma_y = nn.functional.avg_pool2d(y ** 2, 3, 1, 1) - mu_y ** 2
+        sigma_xy = nn.functional.avg_pool2d(x * y, 3, 1, 1) - mu_x * mu_y
+        
+        ssim_map = ((2 * mu_x * mu_y + C1) * (2 * sigma_xy + C2)) / ((mu_x ** 2 + mu_y ** 2 + C1) * (sigma_x + sigma_y + C2))
+        ssim_loss = 1 - ssim_map.mean()
+        
+        return ssim_loss
+    
+    def forward(self, watermarked_images, original_images, extracted_watermarks, original_watermarks, transform_params=None, target_transform_params=None):
+        """
+        计算损失
+        
+        Args:
+            watermarked_images: 含水印图像
+            original_images: 原始图像
+            extracted_watermarks: 提取的水印
+            original_watermarks: 原始水印
+            transform_params: 估计的几何变换参数
+            target_transform_params: 目标几何变换参数
+            
+        Returns:
+            total_loss: 总损失
+        """
+        # 计算嵌入损失（保持图像质量）
+        embedding_loss = self.mse_loss(watermarked_images, original_images)
+        
+        # 计算SSIM损失（感知质量）
+        ssim_loss_val = self.ssim_loss(watermarked_images, original_images)
+        
+        # 计算提取损失（优化水印提取）
+        extraction_loss = self.bce_loss(extracted_watermarks, original_watermarks)
+        
+        # 计算几何变换损失
+        transform_loss = 0.0
+        if transform_params is not None and target_transform_params is not None:
+            transform_loss = self.mse_loss(transform_params, target_transform_params)
+        
+        # 总损失
+        total_loss = (self.embedding_weight * embedding_loss + 
+                     self.ssim_weight * ssim_loss_val + 
+                     self.extraction_weight * extraction_loss +
+                     self.transform_weight * transform_loss)
+        
+        return total_loss
+
 class NoiseLayer(nn.Module):
     """
     噪声层
@@ -29,23 +117,34 @@ class NoiseLayer(nn.Module):
             
         Returns:
             perturbed_x: 攻击后的张量
+            attack_params: 攻击参数
         """
         random_attack = random.randint(0, config.ATTACK_TYPE_LEN - 1)
+        attack_params = {}
 
         if random_attack == 0:
             x = self.add_gaussian_noise(x)
+            attack_params['type'] = 'gaussian'
         elif random_attack == 1:
             x = self.add_jpeg_compression(x)
+            attack_params['type'] = 'jpeg'
         elif random_attack == 2:
-            x = self.add_random_crop(x)
+            x, crop_params = self.add_random_crop(x)
+            attack_params['type'] = 'crop'
+            attack_params['params'] = crop_params
         elif random_attack == 3:
             x = self.add_gaussian_blur(x)
+            attack_params['type'] = 'blur'
         elif random_attack == 4:
-            x = self.add_rotation(x)
+            x, rotation_params = self.add_rotation(x)
+            attack_params['type'] = 'rotation'
+            attack_params['params'] = rotation_params
         elif random_attack == 5:
-            x = self.add_scaling(x)
+            x, scale_params = self.add_scaling(x)
+            attack_params['type'] = 'scale'
+            attack_params['params'] = scale_params
 
-        return x
+        return x, attack_params
 
     def add_gaussian_noise(self, x, std=config.GAUSSIAN_NOISE_STD):
         """
@@ -88,57 +187,48 @@ class NoiseLayer(nn.Module):
         
         return x_up
     
-    def add_random_crop(self, x, crop_size=config.CROP_SIZE):
+    def add_random_crop(self, x):
         """
         添加随机裁剪
         
         Args:
             x: 输入张量
-            crop_size: 裁剪尺寸
             
         Returns:
             cropped_x: 裁剪后保持裁剪原始尺寸的张量
+            crop_params: 裁剪参数 (裁剪比例, 起始位置)
         """
         b, c, h, w = x.shape
         
+        # 随机裁剪比例
+        crop_ratios = torch.rand(b, device=x.device) * (config.MAX_CROP_RATIO - config.MIN_CROP_RATIO) + config.MIN_CROP_RATIO
+        
+        # 计算裁剪尺寸
+        crop_sizes_h = (crop_ratios * h).int()
+        crop_sizes_w = (crop_ratios * w).int()
+        
+        # 确保裁剪尺寸至少为1
+        crop_sizes_h = torch.max(crop_sizes_h, torch.tensor(1, device=x.device))
+        crop_sizes_w = torch.max(crop_sizes_w, torch.tensor(1, device=x.device))
+        
         # 随机裁剪位置
-        start_h = torch.randint(0, h - crop_size + 1, (b,))
-        start_w = torch.randint(0, w - crop_size + 1, (b,))
+        start_h = torch.randint(0, h - crop_sizes_h.max() + 1, (b,), device=x.device)
+        start_w = torch.randint(0, w - crop_sizes_w.max() + 1, (b,), device=x.device)
         
         # 裁剪
         cropped = []
+        crop_params = []
         for i in range(b):
             # 裁剪区域
-            crop = x[i:i+1, :, start_h[i]:start_h[i]+crop_size, start_w[i]:start_w[i]+crop_size]
+            crop_h = crop_sizes_h[i]
+            crop_w = crop_sizes_w[i]
+            crop = x[i:i+1, :, start_h[i]:start_h[i]+crop_h, start_w[i]:start_w[i]+crop_w]
+            # 调整回原始尺寸
+            crop = F.interpolate(crop, size=(h, w), mode='bilinear', align_corners=False)
             cropped.append(crop)
+            crop_params.append((crop_ratios[i].item(), start_h[i].item(), start_w[i].item()))
         
-        return torch.cat(cropped, dim=0)
-    
-    def get_cropped_region(self, x, crop_size=config.CROP_SIZE):
-        """
-        获取随机裁剪区域（保持原始尺寸）
-        
-        Args:
-            x: 输入张量
-            crop_size: 裁剪尺寸
-            
-        Returns:
-            cropped_x: 裁剪后的张量（保持裁剪区域的原始尺寸）
-        """
-        b, c, h, w = x.shape
-        
-        # 随机裁剪位置
-        start_h = torch.randint(0, h - crop_size + 1, (b,))
-        start_w = torch.randint(0, w - crop_size + 1, (b,))
-        
-        # 裁剪
-        cropped = []
-        for i in range(b):
-            # 只执行裁剪操作，不进行缩放
-            crop = x[i:i+1, :, start_h[i]:start_h[i]+crop_size, start_w[i]:start_w[i]+crop_size]
-            cropped.append(crop)
-        
-        return torch.cat(cropped, dim=0)
+        return torch.cat(cropped, dim=0), crop_params
     
     def add_gaussian_blur(self, x, kernel_size=3, sigma=1.0):
         """
@@ -180,16 +270,16 @@ class NoiseLayer(nn.Module):
         kernel = kernel.expand(3, 1, kernel_size, kernel_size)
         return kernel
     
-    def add_rotation(self, x, max_angle=config.MAX_ROTATION_ANGLE):
+    def add_rotation(self, x):
         """
         添加随机旋转
         
         Args:
             x: 输入张量，形状为 (B, C, H, W)
-            max_angle: 最大旋转角度（度）
             
         Returns:
             rotated_x: 旋转后的张量
+            rotation_params: 旋转参数 (旋转角度)
         """
         try:
             # 验证输入
@@ -201,7 +291,7 @@ class NoiseLayer(nn.Module):
             b, c, h, w = x.shape
             
             # 生成随机旋转角度
-            angle = torch.rand(b) * 2 * max_angle - max_angle
+            angle = torch.rand(b) * 2 * config.MAX_ROTATION_ANGLE - config.MAX_ROTATION_ANGLE
             angle = angle.to(x.device)
             
             # 创建旋转矩阵（弧度）
@@ -229,24 +319,27 @@ class NoiseLayer(nn.Module):
             if torch.isinf(rotated_x).any():
                 raise RuntimeError("旋转后的张量包含Inf值")
             
-            return rotated_x
+            # 记录旋转参数
+            rotation_params = angle.tolist()
+            
+            return rotated_x, rotation_params
             
         except Exception as e:
             print(f"Error in add_rotation: {str(e)}")
-            # 如果旋转失败，返回原始图像
-            return x
+            # 如果旋转失败，返回原始图像和空参数
+            b = x.shape[0]
+            return x, [0.0] * b
     
-    def add_scaling(self, x, min_scale=config.MIN_SCALE, max_scale=config.MAX_SCALE):
+    def add_scaling(self, x):
         """
         添加随机缩放
         
         Args:
             x: 输入张量，形状为 (B, C, H, W)
-            min_scale: 最小缩放比例
-            max_scale: 最大缩放比例
             
         Returns:
             scaled_x: 缩放后的张量
+            scale_params: 缩放参数 (缩放比例)
         """
         try:
             # 验证输入
@@ -258,7 +351,7 @@ class NoiseLayer(nn.Module):
             b, c, h, w = x.shape
             
             # 生成随机缩放比例
-            scale = torch.rand(b) * (max_scale - min_scale) + min_scale
+            scale = torch.rand(b) * (config.MAX_SCALE - config.MIN_SCALE) + config.MIN_SCALE
             scale = scale.to(x.device)
             
             # 构建仿射变换矩阵
@@ -279,12 +372,16 @@ class NoiseLayer(nn.Module):
             if torch.isinf(scaled_x).any():
                 raise RuntimeError("缩放后的张量包含Inf值")
             
-            return scaled_x
+            # 记录缩放参数
+            scale_params = scale.tolist()
+            
+            return scaled_x, scale_params
             
         except Exception as e:
             print(f"Error in add_scaling: {str(e)}")
-            # 如果缩放失败，返回原始图像
-            return x
+            # 如果缩放失败，返回原始图像和空参数
+            b = x.shape[0]
+            return x, [1.0] * b
     
     def forward(self, x, attack_type=config.ATTACK_TYPE):
         """
@@ -303,24 +400,34 @@ class NoiseLayer(nn.Module):
             
         Returns:
             x: 带攻击的张量
+            attack_params: 攻击参数列表
         """
+        attack_params = []
+        
         for attack in attack_type:
             if attack == 'random':
-                x = self.add_random_attack(x)
+                x, params = self.add_random_attack(x)
+                attack_params.append(params)
             elif attack == 'gaussian':
                 x = self.add_gaussian_noise(x)
+                attack_params.append({'type': 'gaussian'})
             elif attack == 'jpeg':
                 x = self.add_jpeg_compression(x)
+                attack_params.append({'type': 'jpeg'})
             elif attack == 'crop':
-                x = self.add_random_crop(x)
+                x, params = self.add_random_crop(x)
+                attack_params.append({'type': 'crop', 'params': params})
             elif attack == 'blur':
                 x = self.add_gaussian_blur(x)
+                attack_params.append({'type': 'blur'})
             elif attack == 'rotate':
-                x = self.add_rotation(x)
+                x, params = self.add_rotation(x)
+                attack_params.append({'type': 'rotation', 'params': params})
             elif attack == 'scale':
-                x = self.add_scaling(x)
+                x, params = self.add_scaling(x)
+                attack_params.append({'type': 'scale', 'params': params})
         
-        return x
+        return x, attack_params
 
 class AdversarialTrainer:
     """
@@ -341,6 +448,9 @@ class AdversarialTrainer:
         self.optimizer = optimizer
         self.criterion = criterion
         self.noise_layer = NoiseLayer()
+        self.attack_strength = 0.1  # 初始攻击强度
+        self.max_attack_strength = 1.0  # 最大攻击强度
+        self.strength_growth_rate = 0.05  # 每次迭代的强度增长速率
     
     def train_epoch(self, train_loader, attack_training=False):
         """
@@ -368,17 +478,26 @@ class AdversarialTrainer:
             
             # 应用噪声层
             if attack_training:
-                noisy_images = self.noise_layer(watermarked_images)
+                # 动态调整攻击强度
+                noisy_images, attack_params = self.noise_layer(watermarked_images)
+                # 增加攻击强度
+                self.attack_strength = min(self.attack_strength + self.strength_growth_rate, self.max_attack_strength)
             else:
                 noisy_images = watermarked_images
+                attack_params = []
             
             # 从噪声图像中提取水印
             extracted_watermarks = self.model.extract(noisy_images)
             
-            # 计算损失 - 增加嵌入损失权重以保护图像质量
-            embedding_loss = self.criterion(watermarked_images, images)
-            extraction_loss = self.criterion(extracted_watermarks, watermarks)
-            loss = 1.5 * embedding_loss + extraction_loss  # 增加嵌入损失权重
+            # 计算损失
+            if isinstance(self.criterion, WatermarkLoss):
+                # 使用新的WatermarkLoss
+                loss = self.criterion(watermarked_images, images, extracted_watermarks, watermarks)
+            else:
+                # 使用传统损失计算方式
+                embedding_loss = self.criterion(watermarked_images, images)
+                extraction_loss = self.criterion(extracted_watermarks, watermarks)
+                loss = 1.5 * embedding_loss + extraction_loss  # 增加嵌入损失权重
             
             # 反向传播
             self.optimizer.zero_grad()
@@ -420,6 +539,7 @@ class AdversarialTrainer:
         total_psnr = 0
         total_samples = 0
         correct = 0
+        total_pixels = 0
         
         with torch.no_grad():
             for images, watermarks in tqdm(val_loader, desc="Validating"):
@@ -430,15 +550,20 @@ class AdversarialTrainer:
                 watermarked_images, _ = self.model(images, watermarks)
                 
                 # 应用噪声层
-                noisy_images = self.noise_layer(watermarked_images)
+                noisy_images, attack_params = self.noise_layer(watermarked_images)
                 
                 # 从噪声图像中提取水印
                 extracted_watermarks = self.model.extract(noisy_images)
                 
                 # 计算损失
-                embedding_loss = self.criterion(watermarked_images, images)
-                extraction_loss = self.criterion(extracted_watermarks, watermarks)
-                loss = embedding_loss + extraction_loss
+                if isinstance(self.criterion, WatermarkLoss):
+                    # 使用新的WatermarkLoss
+                    loss = self.criterion(watermarked_images, images, extracted_watermarks, watermarks)
+                else:
+                    # 使用传统损失计算方式
+                    embedding_loss = self.criterion(watermarked_images, images)
+                    extraction_loss = self.criterion(extracted_watermarks, watermarks)
+                    loss = embedding_loss + extraction_loss
                 
                 # 计算PSNR
                 batch_psnr = 0
@@ -457,8 +582,13 @@ class AdversarialTrainer:
                 # 计算准确率
                 predicted = (extracted_watermarks > 0.5).float()
                 correct += (predicted == watermarks).sum().item()
+                total_pixels += watermarks.numel()
+        
+        # 处理空数据情况
+        if total_samples == 0:
+            return 0.0, 0.0, 0.0
         
         val_loss = total_loss / total_samples
-        val_accuracy = correct / (total_samples * watermarks.numel() / images.size(0))
+        val_accuracy = correct / total_pixels if total_pixels > 0 else 0
         val_psnr = total_psnr / total_samples
         return val_loss, val_accuracy, val_psnr

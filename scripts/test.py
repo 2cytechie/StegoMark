@@ -156,6 +156,9 @@ class WatermarkTester:
                 ('blur', 'blur'),
                 ('rotate', 'rotate'),
                 ('scale', 'scale'),
+                ('rotate_scale', ['rotate', 'scale']),  # 旋转+缩放组合攻击
+                ('crop_scale', ['crop', 'scale']),      # 裁剪+缩放组合攻击
+                ('rotate_crop', ['rotate', 'crop']),    # 旋转+裁剪组合攻击
             ]
             
             for attack_name, attack_type in attacks:
@@ -163,20 +166,42 @@ class WatermarkTester:
                     print(f"Applying {attack_name} attack...")
                     
                     # 应用攻击
-                    if attack_type == 'gaussian':
-                        attacked_tensor = self.noise_layer.add_gaussian_noise(watermarked_tensor)
-                    elif attack_type == 'jpeg':
-                        attacked_tensor = self.noise_layer.add_jpeg_compression(watermarked_tensor)
-                    elif attack_type == 'crop':
-                        attacked_tensor = self.noise_layer.add_random_crop(watermarked_tensor)
-                    elif attack_type == 'blur':
-                        attacked_tensor = self.noise_layer.add_gaussian_blur(watermarked_tensor)
-                    elif attack_type == 'rotate':
-                        attacked_tensor = self.noise_layer.add_rotation(watermarked_tensor)
-                    elif attack_type == 'scale':
-                        attacked_tensor = self.noise_layer.add_scaling(watermarked_tensor)
+                    if isinstance(attack_type, list):
+                        # 组合攻击
+                        attacked_tensor = watermarked_tensor
+                        attack_params_list = []
+                        for single_attack in attack_type:
+                            if single_attack == 'gaussian':
+                                attacked_tensor = self.noise_layer.add_gaussian_noise(attacked_tensor)
+                            elif single_attack == 'jpeg':
+                                attacked_tensor = self.noise_layer.add_jpeg_compression(attacked_tensor)
+                            elif single_attack == 'crop':
+                                attacked_tensor, params = self.noise_layer.add_random_crop(attacked_tensor)
+                                attack_params_list.append(params)
+                            elif single_attack == 'blur':
+                                attacked_tensor = self.noise_layer.add_gaussian_blur(attacked_tensor)
+                            elif single_attack == 'rotate':
+                                attacked_tensor, params = self.noise_layer.add_rotation(attacked_tensor)
+                                attack_params_list.append(params)
+                            elif single_attack == 'scale':
+                                attacked_tensor, params = self.noise_layer.add_scaling(attacked_tensor)
+                                attack_params_list.append(params)
                     else:
-                        continue
+                        # 单一攻击
+                        if attack_type == 'gaussian':
+                            attacked_tensor = self.noise_layer.add_gaussian_noise(watermarked_tensor)
+                        elif attack_type == 'jpeg':
+                            attacked_tensor = self.noise_layer.add_jpeg_compression(watermarked_tensor)
+                        elif attack_type == 'crop':
+                            attacked_tensor, params = self.noise_layer.add_random_crop(watermarked_tensor)
+                        elif attack_type == 'blur':
+                            attacked_tensor = self.noise_layer.add_gaussian_blur(watermarked_tensor)
+                        elif attack_type == 'rotate':
+                            attacked_tensor, params = self.noise_layer.add_rotation(watermarked_tensor)
+                        elif attack_type == 'scale':
+                            attacked_tensor, params = self.noise_layer.add_scaling(watermarked_tensor)
+                        else:
+                            continue
                     
                     # 转换回PIL图像并保存
                     attacked_np = attacked_tensor.squeeze(0).permute(1, 2, 0).numpy()
@@ -191,9 +216,23 @@ class WatermarkTester:
                     extracted_attacked_watermark = self.extraction.extract(attacked_path, extracted_attacked_path)
                     print(f"Saved extracted watermark from {attack_name} attack: {extracted_attacked_path}")
                     
+                    # 评估攻击后的水印提取准确率
+                    attack_accuracy = self.evaluator.evaluate_extraction_accuracy(extracted_attacked_watermark, watermark_input, self.watermark_type)
+                    print(f"Extraction accuracy after {attack_name} attack: {attack_accuracy:.4f}")
+                    
+                    # 将攻击评估结果添加到报告中
+                    report['Robustness_Metrics'][attack_name] = attack_accuracy
+                    
                 except Exception as e:
                     print(f"Error processing {attack_name} attack: {str(e)}")
                     continue
+            
+            # 更新鲁棒性评估
+            if report['Robustness_Metrics']:
+                avg_robustness_accuracy = sum(report['Robustness_Metrics'].values()) / len(report['Robustness_Metrics'])
+                report['Overall_Evaluation']['Robustness_Passed'] = avg_robustness_accuracy >= 0.85
+                print(f"Average robustness accuracy: {avg_robustness_accuracy:.4f}")
+                print(f"Robustness test {'PASSED' if avg_robustness_accuracy >= 0.85 else 'FAILED'}")
             
             print("=============================")
             
@@ -306,7 +345,7 @@ def main():
         # tester.test_batch_images(target_dir, watermark_list, output_dir)
         
         # 单个测试
-        cover_image = "img/img9.jpg"
+        cover_image = "img/img10.jpg"
         watermark_input = "img/watermark.png" if watermark_type == 'image' else "Test watermark text"
         tester.test_single_image(cover_image, watermark_input, config.OUTPUT_DIR, "test_single_image.png")
         

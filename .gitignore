@@ -1,5 +1,5 @@
-data/*
-output/*
-.trae/*
-*.pyc
+data/
+output/
+.trae/
+logs/
 __pycache__/

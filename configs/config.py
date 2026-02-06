@@ -38,6 +38,11 @@ class ModelConfig:
     # 解码器配置
     use_stn: bool = True  # 是否使用空间变换网络
     decoder_channels: int = 64
+    
+    # 分组卷积配置
+    use_grouped_conv: bool = True  # 是否使用分组卷积共享权重（可显著降低显存占用），显存大时可以关闭
+    num_blocks: int = 3  # 残差块数量（编码器）
+    num_blocks_decoder: int = 4  # 残差块数量（解码器）
 
 
 @dataclass
@@ -61,7 +66,7 @@ class AttackConfig:
 @dataclass
 class TrainingConfig:
     """训练配置"""
-    batch_size: int = 4
+    batch_size: int = 1
     num_epochs: int = 100
     learning_rate: float = 1e-4
     weight_decay: float = 1e-5
@@ -81,7 +86,7 @@ class TrainingConfig:
     
     # 设备配置
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
-    num_workers: int = 2
+    num_workers: int = 0
 
 
 @dataclass

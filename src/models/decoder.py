@@ -142,6 +142,106 @@ class WatermarkExtractor(nn.Module):
         return x
 
 
+class GroupedWatermarkExtractor(nn.Module):
+    """分组卷积水印提取网络 - 同时处理3个频段，共享大部分权重
+    
+    设计思路：
+    1. 使用1x1卷积将3个频段投影到共享特征空间
+    2. 在共享特征空间处理（编码-残差-解码）
+    3. 使用1x1卷积投影回3个频段的水印
+    
+    参数量对比（base_channels=64）：
+    - 原始3个独立网络: 3 * (3*64*3*3 + 64*128*3*3 + 128*256*3*3 + 256*256*3*3*4 + ...) ≈ 15M
+    - 分组卷积版本: 9*64*1*1 + (3*64*3*3 + 64*128*3*3 + 128*256*3*3) + 256*256*3*3*4 + 256*9*1*1 ≈ 5M
+    """
+    
+    def __init__(self, in_channels=3, watermark_channels=3, base_channels=64, num_blocks=4):
+        super().__init__()
+        
+        self.in_channels = in_channels
+        self.watermark_channels = watermark_channels
+        
+        # 输入投影层：将3个频段投影到共享特征空间
+        self.input_proj = nn.Sequential(
+            nn.Conv2d(in_channels * 3, base_channels, 1),
+            nn.BatchNorm2d(base_channels),
+            nn.ReLU(inplace=True)
+        )
+        
+        # 共享编码器（处理共享特征空间）
+        self.encoder = nn.Sequential(
+            nn.Conv2d(base_channels, base_channels, 3, padding=1),
+            nn.BatchNorm2d(base_channels),
+            nn.ReLU(inplace=True),
+            
+            nn.Conv2d(base_channels, base_channels*2, 3, stride=2, padding=1),
+            nn.BatchNorm2d(base_channels*2),
+            nn.ReLU(inplace=True),
+            
+            nn.Conv2d(base_channels*2, base_channels*4, 3, stride=2, padding=1),
+            nn.BatchNorm2d(base_channels*4),
+            nn.ReLU(inplace=True),
+        )
+        
+        # 共享残差块
+        self.residual_blocks = nn.Sequential(*[
+            ResidualBlock(base_channels*4) for _ in range(num_blocks)
+        ])
+        
+        # 共享解码器
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(base_channels*4, base_channels*2, 4, stride=2, padding=1),
+            nn.BatchNorm2d(base_channels*2),
+            nn.ReLU(inplace=True),
+            
+            nn.ConvTranspose2d(base_channels*2, base_channels, 4, stride=2, padding=1),
+            nn.BatchNorm2d(base_channels),
+            nn.ReLU(inplace=True),
+            
+            nn.Conv2d(base_channels, base_channels, 3, padding=1),
+            nn.BatchNorm2d(base_channels),
+            nn.ReLU(inplace=True),
+        )
+        
+        # 输出投影层：将共享特征投影回3个频段的水印
+        self.output_proj = nn.Sequential(
+            nn.Conv2d(base_channels, watermark_channels * 3, 1),
+            nn.Tanh()
+        )
+    
+    def forward(self, bands):
+        """
+        从三个频段提取水印
+        
+        Args:
+            bands: 三个频段拼接 [B, 9, H, W] (LH, HL, HH)
+            
+        Returns:
+            watermark_lh: 从LH提取的水印 [B, 3, H, W]
+            watermark_hl: 从HL提取的水印 [B, 3, H, W]
+            watermark_hh: 从HH提取的水印 [B, 3, H, W]
+        """
+        # 投影到共享特征空间
+        x = self.input_proj(bands)
+        
+        # 编码
+        x = self.encoder(x)
+        
+        # 残差处理
+        x = self.residual_blocks(x)
+        
+        # 解码
+        x = self.decoder(x)
+        
+        # 投影回3个频段的水印
+        x = self.output_proj(x)
+        
+        # 分割成三个频段的水印
+        watermark_lh, watermark_hl, watermark_hh = torch.chunk(x, 3, dim=1)
+        
+        return watermark_lh, watermark_hl, watermark_hh
+
+
 class ResidualBlock(nn.Module):
     """残差块"""
     
@@ -168,7 +268,8 @@ class Decoder(nn.Module):
     """
     
     def __init__(self, wavelet='haar', mode='symmetric',
-                 use_stn=True, base_channels=64, num_blocks=4, watermark_size=64):
+                 use_stn=True, base_channels=64, num_blocks=4, watermark_size=64,
+                 use_grouped_conv=False):
         """
         Args:
             wavelet: 小波基
@@ -177,6 +278,7 @@ class Decoder(nn.Module):
             base_channels: 基础通道数
             num_blocks: 残差块数量
             watermark_size: 水印尺寸
+            use_grouped_conv: 是否使用分组卷积共享权重
         """
         super().__init__()
         
@@ -184,6 +286,7 @@ class Decoder(nn.Module):
         self.mode = mode
         self.use_stn = use_stn
         self.watermark_size = watermark_size
+        self.use_grouped_conv = use_grouped_conv
         
         # DWT变换
         self.dwt = DWT2D(wavelet, mode)
@@ -192,25 +295,34 @@ class Decoder(nn.Module):
         if use_stn:
             self.stn = SpatialTransformerNetwork(in_channels=3)
         
-        # 三个水印提取网络（分别用于LH、HL、HH频段）
-        self.extractor_lh = WatermarkExtractor(
-            in_channels=3,
-            watermark_channels=3,
-            base_channels=base_channels,
-            num_blocks=num_blocks
-        )
-        self.extractor_hl = WatermarkExtractor(
-            in_channels=3,
-            watermark_channels=3,
-            base_channels=base_channels,
-            num_blocks=num_blocks
-        )
-        self.extractor_hh = WatermarkExtractor(
-            in_channels=3,
-            watermark_channels=3,
-            base_channels=base_channels,
-            num_blocks=num_blocks
-        )
+        if use_grouped_conv:
+            # 使用分组卷积共享权重
+            self.grouped_extractor = GroupedWatermarkExtractor(
+                in_channels=3,
+                watermark_channels=3,
+                base_channels=base_channels,
+                num_blocks=num_blocks
+            )
+        else:
+            # 三个独立的水印提取网络（分别用于LH、HL、HH频段）
+            self.extractor_lh = WatermarkExtractor(
+                in_channels=3,
+                watermark_channels=3,
+                base_channels=base_channels,
+                num_blocks=num_blocks
+            )
+            self.extractor_hl = WatermarkExtractor(
+                in_channels=3,
+                watermark_channels=3,
+                base_channels=base_channels,
+                num_blocks=num_blocks
+            )
+            self.extractor_hh = WatermarkExtractor(
+                in_channels=3,
+                watermark_channels=3,
+                base_channels=base_channels,
+                num_blocks=num_blocks
+            )
         
         # 水印融合网络（自适应加权融合三个频段提取的水印）
         self.fusion = nn.Sequential(
@@ -249,10 +361,15 @@ class Decoder(nn.Module):
             HL = dwt_bands['HL']
             HH = dwt_bands['HH']
         
-        # 从三个频段分别提取水印
-        watermark_lh = self.extractor_lh(LH)
-        watermark_hl = self.extractor_hl(HL)
-        watermark_hh = self.extractor_hh(HH)
+        if self.use_grouped_conv:
+            # 使用分组卷积同时处理三个频段
+            bands = torch.cat([LH, HL, HH], dim=1)  # [B, 9, H, W]
+            watermark_lh, watermark_hl, watermark_hh = self.grouped_extractor(bands)
+        else:
+            # 从三个频段分别提取水印
+            watermark_lh = self.extractor_lh(LH)
+            watermark_hl = self.extractor_hl(HL)
+            watermark_hh = self.extractor_hh(HH)
         
         # 调整尺寸到标准水印尺寸
         watermark_lh = F.interpolate(

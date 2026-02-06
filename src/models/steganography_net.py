@@ -14,7 +14,8 @@ class SteganographyNet(nn.Module):
     """
     
     def __init__(self, use_dwt=True, wavelet='haar', mode='symmetric',
-                 use_stn=True, base_channels=64, num_blocks=4, watermark_size=64):
+                 use_stn=True, base_channels=64, num_blocks=4, watermark_size=64,
+                 use_grouped_conv=False, num_blocks_decoder=None):
         """
         Args:
             use_dwt: 是否使用DWT
@@ -22,13 +23,19 @@ class SteganographyNet(nn.Module):
             mode: 边界处理模式
             use_stn: 是否使用STN
             base_channels: 基础通道数
-            num_blocks: 残差块数量
+            num_blocks: 残差块数量（编码器）
             watermark_size: 水印尺寸
+            use_grouped_conv: 是否使用分组卷积共享权重
+            num_blocks_decoder: 解码器残差块数量（默认等于num_blocks）
         """
         super().__init__()
         
         self.use_dwt = use_dwt
         self.watermark_size = watermark_size
+        
+        # 如果未指定解码器块数，使用与编码器相同
+        if num_blocks_decoder is None:
+            num_blocks_decoder = num_blocks
         
         # 编码器
         if use_dwt:
@@ -36,15 +43,17 @@ class SteganographyNet(nn.Module):
                 wavelet=wavelet,
                 mode=mode,
                 base_channels=base_channels,
-                num_blocks=num_blocks
+                num_blocks=num_blocks,
+                use_grouped_conv=use_grouped_conv
             )
             self.decoder = Decoder(
                 wavelet=wavelet,
                 mode=mode,
                 use_stn=use_stn,
                 base_channels=base_channels,
-                num_blocks=num_blocks,
-                watermark_size=watermark_size
+                num_blocks=num_blocks_decoder,
+                watermark_size=watermark_size,
+                use_grouped_conv=use_grouped_conv
             )
         else:
             self.encoder = SimpleEncoder(
@@ -53,7 +62,7 @@ class SteganographyNet(nn.Module):
             )
             self.decoder = SimpleDecoder(
                 base_channels=base_channels,
-                num_blocks=num_blocks,
+                num_blocks=num_blocks_decoder,
                 watermark_size=watermark_size
             )
     
@@ -154,17 +163,17 @@ class Discriminator(nn.Module):
         return self.model(x)
 
 
-def create_model(config):
+def create_model(config=None):
     """
     根据配置创建模型
     
     Args:
-        config: 配置对象，包含model_config和training_config
+        config: 配置对象，包含model_config和training_config（可选，默认使用全局配置）
         
     Returns:
         model: SteganographyNet实例
     """
-    from configs.config import model_config
+    from configs.config import model_config, data_config
     
     model = SteganographyNet(
         use_dwt=True,
@@ -172,8 +181,10 @@ def create_model(config):
         mode=model_config.mode,
         use_stn=model_config.use_stn,
         base_channels=model_config.encoder_channels,
-        num_blocks=4,
-        watermark_size=64
+        num_blocks=model_config.num_blocks,
+        num_blocks_decoder=model_config.num_blocks_decoder,
+        watermark_size=data_config.watermark_size,
+        use_grouped_conv=model_config.use_grouped_conv
     )
     
     return model

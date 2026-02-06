@@ -10,10 +10,10 @@ from typing import Tuple
 @dataclass
 class DataConfig:
     """数据配置"""
-    train_images_dir: str = "data\\train\\images"
-    train_watermarks_dir: str = "data\\train\\watermarks"
-    val_images_dir: str = "data\\val\\images"
-    val_watermarks_dir: str = "data\\val\\watermarks"
+    train_images_dir: str = os.path.join("data", "train", "images")
+    train_watermarks_dir: str = os.path.join("data", "train", "watermarks")
+    val_images_dir: str = os.path.join("data", "val", "images")
+    val_watermarks_dir: str = os.path.join("data", "val", "watermarks")
     
     # 水印尺寸
     watermark_size: int = 64

@@ -1,5 +1,4 @@
-data/
-output/
-.trae/
-logs/
+data/*
+outputs/*
+.trae/*
 __pycache__/

@@ -137,7 +137,7 @@ python -m src.extract \
 python demo.py
 
 # 使用训练好的模型
-python demo.py --checkpoint outputs/best/checkpoints/best.pth
+python demo.py --checkpoint checkpoints/best.pth
 
 # 仅鲁棒性测试
 python demo.py --mode robustness
@@ -232,13 +232,3 @@ save_watermark_robustness_test(
 2. **图像尺寸**: 默认处理64x64的图像块，大图会被分块处理
 3. **GPU内存**: 如果显存不足，可以减小batch_size或hidden_dim
 4. **攻击鲁棒性**: 训练时启用攻击模拟可以提高模型的鲁棒性
-
-## 许可证
-
-MIT License
-
-## 致谢
-
-- PyTorch 团队
-- PyWavelets 项目
-- 开源社区

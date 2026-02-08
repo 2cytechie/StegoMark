@@ -13,6 +13,8 @@ class Config:
     train_watermark_dir: str = "data/train/watermarks"
     val_image_dir: str = "data/val/images"
     val_watermark_dir: str = "data/val/watermarks"
+    test_target_img: str = "img/img2.jpg"
+    test_watermark_img: str = "img/watermark.png"
     num_workers: int = 4  # 数据加载器线程数
     
     # 输出路径
@@ -30,6 +32,7 @@ class Config:
     # 图像尺寸
     image_size: int = 64
     watermark_size: int = 64
+    overlap: int = 8            # 分块重叠区域
     
     # 训练参数
     batch_size: int = 16
@@ -40,6 +43,7 @@ class Config:
     num_scales: int = 3             # 多尺度训练层数
     lr_step: int = 30               # 学习率衰减周期
     lr_gamma: float = 0.5           # 学习率衰减因子
+    use_multiscale_decoder: bool = True  # 是否使用多尺度解码器
     
     # 损失权重
     lambda_image: float = 1.0       # 图像失真损失权重

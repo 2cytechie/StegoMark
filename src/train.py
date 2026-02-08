@@ -24,7 +24,7 @@ class Trainer:
         self.args = args
         self.device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
         
-        # 创建输出目录 - 使用 config 中的 checkpoint_dir
+        # 创建输出目录
         self.exp_dir = config.checkpoint_dir
         os.makedirs(self.exp_dir, exist_ok=True)
         
@@ -88,7 +88,6 @@ class Trainer:
             watermark_dir=self.args.train_watermark_dir,
             transform=get_train_transforms(self.args.image_size),
             watermark_transform=get_train_transforms(self.args.image_size),
-            image_size=self.args.image_size,
             watermark_size=self.args.watermark_size
         )
         
@@ -98,7 +97,6 @@ class Trainer:
             watermark_dir=self.args.val_watermark_dir,
             transform=get_val_transforms(self.args.image_size),
             watermark_transform=get_val_transforms(self.args.image_size),
-            image_size=self.args.image_size,
             watermark_size=self.args.watermark_size
         )
         
@@ -314,7 +312,7 @@ def parse_args():
     # 模型参数
     parser.add_argument('--hidden_dim', type=int, default=config.hidden_dim)
     parser.add_argument('--attack_prob', type=float, default=config.attack_prob)
-    parser.add_argument('--use_multiscale', action='store_true')
+    parser.add_argument('--use_multiscale', action='store_true', default=config.use_multiscale_decoder)
     parser.add_argument('--num_scales', type=int, default=config.num_scales)
 
     # 损失权重 - 使用 config 作为默认值

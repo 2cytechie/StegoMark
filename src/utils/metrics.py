@@ -191,13 +191,37 @@ class MetricsTracker:
 
 def test_metrics():
     """测试评估指标"""
-    # 创建测试数据
-    img1 = torch.rand(2, 3, 64, 64)
-    img2 = img1 + torch.randn(2, 3, 64, 64) * 0.05
+    from PIL import Image
+    import os
+    
+    # 使用测试图片
+    test_img_path = 'img/img2.jpg'
+    test_wm_path = 'img/watermark.png'
+    
+    # 如果文件不存在，使用其他图片
+    if not os.path.exists(test_img_path):
+        test_img_path = 'img/target.png'
+    if not os.path.exists(test_wm_path):
+        test_wm_path = 'img/watermark.png'
+    
+    # 加载测试数据
+    img1 = Image.open(test_img_path).convert("RGB")
+    img1 = torch.from_numpy(np.array(img1)).permute(2, 0, 1).float() / 255.0
+    
+    # 创建带噪声的版本
+    img2 = img1 + torch.randn_like(img1) * 0.05
     img2 = torch.clamp(img2, 0, 1)
     
-    wm1 = torch.rand(2, 3, 64, 64)
-    wm2 = wm1 + torch.randn(2, 3, 64, 64) * 0.1
+    # 加载水印
+    wm1 = Image.open(test_wm_path).convert("RGB")
+    wm1 = torch.from_numpy(np.array(wm1)).permute(2, 0, 1).float() / 255.0
+    
+    # 调整水印尺寸
+    if wm1.shape != img1.shape:
+        wm1 = F.interpolate(wm1.unsqueeze(0), size=img1.shape[1:], mode='bilinear', align_corners=False).squeeze(0)
+    
+    # 创建带噪声的水印版本
+    wm2 = wm1 + torch.randn_like(wm1) * 0.1
     wm2 = torch.clamp(wm2, 0, 1)
     
     print("测试评估指标:")
@@ -208,7 +232,9 @@ def test_metrics():
     
     # 测试评估函数
     results = evaluate_watermark_system(img1, img2, wm1, wm2)
-    print(f"\n完整评估结果: {results}")
+    print(f"\n完整评估结果:")
+    for key, value in results.items():
+        print(f"  {key.upper()}: {value:.4f}")
 
 
 if __name__ == "__main__":

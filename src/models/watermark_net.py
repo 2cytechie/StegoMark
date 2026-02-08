@@ -3,6 +3,7 @@ import torch.nn as nn
 from .encoder import WatermarkEncoder
 from .decoder import WatermarkDecoder, MultiScaleDecoder
 from .attack_simulator import AttackSimulator
+from ..config import config
 
 
 class WatermarkNet(nn.Module):
@@ -16,7 +17,9 @@ class WatermarkNet(nn.Module):
         wavelet: str = 'haar',
         attack_prob: float = 0.5,
         use_multiscale_decoder: bool = False,
-        num_scales: int = 3
+        num_scales: int = 3,
+        block_size: int = config.watermark_size,
+        overlap: int = config.overlap
     ):
         super(WatermarkNet, self).__init__()
         
@@ -25,7 +28,9 @@ class WatermarkNet(nn.Module):
             image_channels=image_channels,
             watermark_channels=watermark_channels,
             hidden_dim=hidden_dim,
-            wavelet=wavelet
+            wavelet=wavelet,
+            block_size=block_size,
+            overlap=overlap
         )
         
         # 攻击模拟器
@@ -37,14 +42,18 @@ class WatermarkNet(nn.Module):
                 image_channels=image_channels,
                 watermark_channels=watermark_channels,
                 hidden_dim=hidden_dim,
-                num_scales=num_scales
+                num_scales=num_scales,
+                block_size=block_size,
+                overlap=overlap
             )
         else:
             self.decoder = WatermarkDecoder(
                 image_channels=image_channels,
                 watermark_channels=watermark_channels,
                 hidden_dim=hidden_dim,
-                wavelet=wavelet
+                wavelet=wavelet,
+                block_size=block_size,
+                overlap=overlap
             )
         
         self.use_multiscale = use_multiscale_decoder
@@ -97,11 +106,13 @@ def test_watermark_net():
     net = WatermarkNet(
         hidden_dim=64,
         attack_prob=0.5,
-        use_multiscale_decoder=False
+        use_multiscale_decoder=False,
+        block_size=config.watermark_size,
+        overlap=config.overlap
     )
     
     # 测试数据
-    image = torch.randn(2, 3, 64, 64)
+    image = torch.randn(2, 3, 256, 256)  # 使用更大的图像测试分块
     watermark = torch.randn(2, 3, 64, 64)
     
     # 训练模式
@@ -129,6 +140,15 @@ def test_watermark_net():
     
     print("\n评估模式 (无攻击):")
     print(f"  置信度: {confidence.mean().item():.4f}")
+    
+    # 测试单独编码解码
+    print("\n测试单独编码解码:")
+    with torch.no_grad():
+        encoded = net.encode(image, watermark)
+        decoded_wm, conf = net.decode(encoded)
+    print(f"  编码后图像: {encoded.shape}")
+    print(f"  解码水印: {decoded_wm.shape}")
+    print(f"  解码置信度: {conf.mean().item():.4f}")
 
 
 if __name__ == "__main__":

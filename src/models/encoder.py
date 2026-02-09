@@ -111,11 +111,11 @@ class WatermarkEncoder(nn.Module):
             nn.ReLU(inplace=True),
         )
         
-        # 频域融合块（用于所有子带）
-        self.fusion_ll = FrequencyFusionBlock(hidden_dim)
-        self.fusion_lh = FrequencyFusionBlock(hidden_dim)
-        self.fusion_hl = FrequencyFusionBlock(hidden_dim)
-        self.fusion_hh = FrequencyFusionBlock(hidden_dim)
+        # 频域融合块
+        self.fusion_ll = FrequencyFusionBlock(hidden_dim)  # LL低频子带
+        self.fusion_lh = FrequencyFusionBlock(hidden_dim)  # LH水平高频子带
+        self.fusion_hl = FrequencyFusionBlock(hidden_dim)  # HL垂直高频子带
+        self.fusion_hh = FrequencyFusionBlock(hidden_dim)  # HH对角高频子带
         
         # 后处理网络
         self.post_conv = nn.Sequential(
@@ -126,8 +126,7 @@ class WatermarkEncoder(nn.Module):
         )
         
         # 可学习的嵌入强度
-        self.embedding_strength = nn.Parameter(torch.tensor(0.1))
-        
+        self.embedding_strength = nn.Parameter(torch.tensor(1.0))
         # 水印增强网络 - 提高水印的鲁棒性
         self.watermark_enhance = nn.Sequential(
             nn.Conv2d(3, 16, 3, padding=1),
@@ -201,13 +200,13 @@ class WatermarkEncoder(nn.Module):
         # DWT分解
         ll, lh, hl, hh = self.dwt.decompose(feat)
         
-        # Resize水印以匹配DWT子带尺寸
+        # Resize水印以匹配DWT子带尺寸（所有子带）
         wm_ll = F.interpolate(enhanced_watermark, size=ll.shape[-2:], mode='bilinear', align_corners=False)
         wm_lh = F.interpolate(enhanced_watermark, size=lh.shape[-2:], mode='bilinear', align_corners=False)
         wm_hl = F.interpolate(enhanced_watermark, size=hl.shape[-2:], mode='bilinear', align_corners=False)
         wm_hh = F.interpolate(enhanced_watermark, size=hh.shape[-2:], mode='bilinear', align_corners=False)
         
-        # 在所有子带中嵌入水印（包括LL子带）
+        # 在所有子带中嵌入水印（包含LL低频子带）
         ll_embedded = self.fusion_ll(ll, wm_ll)
         lh_embedded = self.fusion_lh(lh, wm_lh)
         hl_embedded = self.fusion_hl(hl, wm_hl)
@@ -216,8 +215,9 @@ class WatermarkEncoder(nn.Module):
         # 合并且控制嵌入强度
         strength = torch.sigmoid(self.embedding_strength)
         
-        # 对不同子带使用不同的嵌入强度
-        ll_merged = ll + strength * 0.5 * (ll_embedded - ll)  # LL子带嵌入较弱
+        # 在所有子带中嵌入水印（LL子带使用较低的嵌入强度）
+        ll_strength = strength * 0.1  # LL子带使用较低的嵌入强度以保护图像质量
+        ll_merged = ll + ll_strength * (ll_embedded - ll)
         lh_merged = lh + strength * (lh_embedded - lh)
         hl_merged = hl + strength * (hl_embedded - hl)
         hh_merged = hh + strength * (hh_embedded - hh)
@@ -303,7 +303,7 @@ class WatermarkEncoder(nn.Module):
         输出:
             watermarked_image: 含水印图像 (B, 3, H, W)
         """
-        # 步骤1: 将目标图片分块（64x64）处理
+        # 步骤1: 将目标图片分块处理
         blocks, block_positions, original_size = self.extract_blocks(image)
         
         # 步骤2-5: 对每个块进行DWT分解和水印嵌入
@@ -321,63 +321,3 @@ class WatermarkEncoder(nn.Module):
         watermarked_image = self.merge_blocks(watermarked_blocks, block_positions, original_size)
         
         return watermarked_image
-
-
-def test_encoder():
-    """测试编码器（分块处理版本）"""
-    from PIL import Image
-    import torchvision.transforms as transforms
-    import torchvision.transforms.functional as TF
-    from ..config import config
-    import os
-
-    # 确保输出目录存在
-    os.makedirs(config.output_dir, exist_ok=True)
-
-    encoder = WatermarkEncoder(block_size=64, overlap=config.overlap)
-    encoder.eval()
-    
-    # 测试数据 - 使用较大的图像来测试分块效果
-    image = Image.open(config.test_target_img).convert('RGB')
-    watermark = Image.open(config.test_watermark_img).convert('RGB')
-    
-    # 转换为张量
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-    ])
-    image = transform(image).unsqueeze(0)
-    watermark = transform(watermark).unsqueeze(0)
-    
-    print(f"输入图像形状: {image.shape}")
-    print(f"水印形状: {watermark.shape}")
-    
-    # 前向传播
-    with torch.no_grad():
-        output = encoder(image, watermark)
-    
-    # 保存输出图像
-    image_img = TF.to_pil_image(image.squeeze(0))
-    output_img = TF.to_pil_image(output.squeeze(0))
-    image_img.save(config.output_dir + '/original.png')
-    output_img.save(config.output_dir + '/test_encoder.png')
-    
-    print(f"输出图像形状: {output.shape}")
-    print(f"输出范围: [{output.min():.3f}, {output.max():.3f}]")
-    
-    # 计算PSNR
-    mse = torch.mean((image - output) ** 2)
-    psnr = 10 * torch.log10(1.0 / (mse + 1e-8))
-    print(f"PSNR: {psnr:.2f} dB")
-    
-    # 测试分块提取功能
-    print("\n测试分块提取:")
-    blocks, positions, orig_size = encoder.extract_blocks(image)
-    print(f"图像被分成 {len(blocks)} 个块")
-    print(f"块大小: {blocks[0].shape}")
-    print(f"原始图像尺寸: {orig_size}")
-    
-    print(f"\n嵌入强度: {torch.sigmoid(encoder.embedding_strength).item():.4f}")
-
-
-if __name__ == "__main__":
-    test_encoder()

@@ -136,9 +136,22 @@ class WatermarkLoss(nn.Module):
             loss_sync = F.relu(0.1 - loss_watermark)  # 如果损失太小，给予惩罚
         loss_dict['sync'] = loss_sync.item()
         
-        # 4. 置信度损失 - 让模型学会预测水印存在概率
-        # 目标：有水印时confidence接近1，无水印时接近0
-        target_confidence = torch.ones_like(confidence)
+        # 4. 置信度损失 - 让置信度真实反映水印提取质量
+        # 根据NC（归一化相关系数）计算目标置信度
+        with torch.no_grad():
+            # 计算当前提取质量
+            wm1_bin = (original_watermark > 0.5).float()
+            wm2_bin = (extracted_watermark > 0.5).float()
+            wm1_flat = wm1_bin.view(wm1_bin.size(0), -1)
+            wm2_flat = wm2_bin.view(wm2_bin.size(0), -1)
+            numerator = torch.sum(wm1_flat * wm2_flat, dim=1)
+            denominator = torch.sqrt(torch.sum(wm1_flat ** 2, dim=1) * torch.sum(wm2_flat ** 2, dim=1))
+            nc = numerator / (denominator + 1e-8)
+            
+            # NC > 0.8 认为提取成功，目标置信度为NC值；否则为0
+            target_confidence = torch.where(nc > 0.8, nc, torch.zeros_like(nc))
+            target_confidence = target_confidence.view(-1, 1)
+        
         loss_confidence = F.binary_cross_entropy(confidence, target_confidence)
         loss_dict['confidence'] = loss_confidence.item()
         

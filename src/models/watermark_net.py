@@ -3,7 +3,6 @@ import torch.nn as nn
 from .encoder import WatermarkEncoder
 from .decoder import WatermarkDecoder, MultiScaleDecoder
 from .attack_simulator import AttackSimulator
-from ..config import config
 
 
 class WatermarkNet(nn.Module):
@@ -16,10 +15,10 @@ class WatermarkNet(nn.Module):
         hidden_dim: int = 64,
         wavelet: str = 'haar',
         attack_prob: float = 0.5,
-        use_multiscale_decoder: bool = False,
+        use_multiscale_decoder: bool = True,
         num_scales: int = 3,
-        block_size: int = config.watermark_size,
-        overlap: int = config.overlap
+        block_size: int = 64,
+        overlap: int = 0
     ):
         super(WatermarkNet, self).__init__()
         
@@ -102,10 +101,12 @@ class WatermarkNet(nn.Module):
 
 def test_watermark_net():
     """测试完整网络"""
+    from ..config import config
+    
     # 创建网络
     net = WatermarkNet(
         hidden_dim=64,
-        attack_prob=0.5,
+        attack_prob=config.attack_prob,
         use_multiscale_decoder=False,
         block_size=config.watermark_size,
         overlap=config.overlap

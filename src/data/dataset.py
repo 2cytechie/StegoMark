@@ -15,14 +15,12 @@ class WatermarkDataset(Dataset):
         self,
         image_dir: str,
         watermark_dir: str,
-        transform: Optional[Callable] = None,
-        watermark_transform: Optional[Callable] = None,
+        image_size: int = 256,
         watermark_size: int = 64
     ):
         self.image_dir = image_dir
         self.watermark_dir = watermark_dir
-        self.transform = transform
-        self.watermark_transform = watermark_transform
+        self.image_size = image_size
         self.watermark_size = watermark_size
         
         # 获取图像文件列表
@@ -75,34 +73,6 @@ class WatermarkDataset(Dataset):
         将水印resize到指定尺寸
         """
         return img.resize((size, size), Image.Resampling.LANCZOS)
-    
-    def _tile_watermark(self, watermark: torch.Tensor, target_h: int, target_w: int) -> torch.Tensor:
-        """
-        将水印循环平铺到目标尺寸
-        
-        输入:
-            watermark: (C, H, W) 水印张量
-            target_h: 目标高度
-            target_w: 目标宽度
-        输出:
-            tiled_watermark: (C, target_h, target_w) 平铺后的水印
-        """
-        c, h, w = watermark.shape
-        
-        # 计算需要多少个水印才能覆盖目标区域
-        n_h = (target_h + h - 1) // h  # 向上取整
-        n_w = (target_w + w - 1) // w
-        
-        # 先沿宽度方向重复
-        tiled_w = watermark.repeat(1, 1, n_w)  # (C, H, W*n_w)
-        
-        # 再沿高度方向重复
-        tiled = tiled_w.repeat(1, n_h, 1)  # (C, H*n_h, W*n_w)
-        
-        # 裁剪到目标尺寸
-        tiled = tiled[:, :target_h, :target_w]
-        
-        return tiled
     
     def _augment_image(self, img: Image.Image) -> Image.Image:
         """
@@ -196,35 +166,18 @@ class WatermarkDataset(Dataset):
         # 步骤1: 填充到1:1比例
         watermark = self._pad_to_square(watermark)
         
-        # 步骤2: resize到64x64
+        # 步骤2: resize到指定尺寸
+        image = self._resize_watermark(image, self.image_size)
         watermark = self._resize_watermark(watermark, self.watermark_size)
         
-        # 应用变换（如果有）
-        if self.transform:
-            image = self.transform(image)
-        else:
-            image = self._default_image_transform(image)
-        
-        if self.watermark_transform:
-            watermark = self.watermark_transform(watermark)
-        else:
-            watermark = self._default_watermark_transform(watermark)
-        
-        # 步骤3: 循环平铺到目标尺寸
-        _, img_h, img_w = image.shape
-        watermark = self._tile_watermark(watermark, img_h, img_w)
+        # 步骤3: 转换为tensor
+        image = self._image_transform(image)
+        watermark = self._image_transform(watermark)
         
         return image, watermark
     
-    def _default_image_transform(self, img: Image.Image) -> torch.Tensor:
+    def _image_transform(self, img: Image.Image) -> torch.Tensor:
         """默认图像变换：转为tensor，保持原始尺寸"""
-        transform = transforms.Compose([
-            transforms.ToTensor(),  # 转为tensor [0, 1]
-        ])
-        return transform(img)
-    
-    def _default_watermark_transform(self, img: Image.Image) -> torch.Tensor:
-        """默认水印变换：转为tensor"""
         transform = transforms.Compose([
             transforms.ToTensor(),  # 转为tensor [0, 1]
         ])
@@ -233,17 +186,21 @@ class WatermarkDataset(Dataset):
 
 def test_dataset():
     """测试数据集"""
+    from src.config import config
+    
     # 创建测试数据集
     dataset = WatermarkDataset(
-        image_dir='img',           # 目标图片目录
-        watermark_dir='img',       # 水印图片目录
-        watermark_size=64
+        image_dir=config.test_image_dir,           # 目标图片目录
+        watermark_dir=config.test_watermark_dir,       # 水印图片目录
+        image_size=config.image_size,
+        watermark_size=config.watermark_size
     )
     
     print(f"数据集大小: {len(dataset)}")
     
-    # 获取一个样本
-    image, watermark = dataset[1]
+    # 随机获取一个样本
+    idx = random.randint(0, len(dataset) - 1)
+    image, watermark = dataset[idx]
     
     print(f"\n目标图片尺寸: {image.shape}")
     print(f"水印尺寸: {watermark.shape}")
@@ -259,10 +216,10 @@ def test_dataset():
     img_pil.save('outputs/test_dateset_target.png')
     print(f"\n保存目标图片: outputs/test_dateset_target.png")
     
-    # 保存水印（平铺后的）
+    # 保存水印
     wm_pil = TF.to_pil_image(watermark)
-    wm_pil.save('outputs/test_dateset_watermark_tiled.png')
-    print(f"保存平铺水印: outputs/test_dateset_watermark_tiled.png")
+    wm_pil.save('outputs/test_dateset_watermark.png')
+    print(f"保存水印: outputs/test_dateset_watermark.png")
     
     # 测试多次获取，观察数据增强效果
     print("\n=== 测试数据增强效果（获取同一张图片5次）===")
@@ -276,7 +233,8 @@ def test_dataset():
     print("\n=== 水印处理流程测试 ===")
     
     # 加载原始水印
-    wm_path = dataset.watermark_files[1]
+    idx = random.randint(0, len(dataset.watermark_files) - 1)
+    wm_path = dataset.watermark_files[idx]
     original_wm = Image.open(wm_path).convert('RGB')
     print(f"原始水印尺寸: {original_wm.size}")
     

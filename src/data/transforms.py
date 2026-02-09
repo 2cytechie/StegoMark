@@ -94,23 +94,3 @@ class ResizeAndTile:
                 result[:, i:end_i, j:end_j] = img[:, :copy_h, :copy_w]
         
         return result
-
-
-def get_train_transforms(image_size: int = 64) -> transforms.Compose:
-    """获取训练时的数据变换"""
-    return transforms.Compose([
-        transforms.ToTensor(),
-        ResizeAndTile(image_size),
-        transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomVerticalFlip(p=0.3),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
-        transforms.RandomAffine(degrees=10, translate=(0.1, 0.1), scale=(0.9, 1.1)),
-    ])
-
-
-def get_val_transforms(image_size: int = 64) -> transforms.Compose:
-    """获取验证时的数据变换"""
-    return transforms.Compose([
-        transforms.ToTensor(),
-        ResizeAndTile(image_size),
-    ])

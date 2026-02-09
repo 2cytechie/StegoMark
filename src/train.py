@@ -2,6 +2,7 @@ import os
 import sys
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -12,7 +13,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import config
-from src.data import WatermarkDataset, get_train_transforms, get_val_transforms
+from src.data import WatermarkDataset
 from src.models import WatermarkNet
 from src.utils import WatermarkLoss, MetricsTracker, calculate_psnr, calculate_ssim, calculate_nc, calculate_ber
 
@@ -86,8 +87,7 @@ class Trainer:
         train_dataset = WatermarkDataset(
             image_dir=self.args.train_image_dir,
             watermark_dir=self.args.train_watermark_dir,
-            transform=get_train_transforms(self.args.image_size),
-            watermark_transform=get_train_transforms(self.args.image_size),
+            image_size=self.args.image_size,
             watermark_size=self.args.watermark_size
         )
         
@@ -95,8 +95,7 @@ class Trainer:
         val_dataset = WatermarkDataset(
             image_dir=self.args.val_image_dir,
             watermark_dir=self.args.val_watermark_dir,
-            transform=get_val_transforms(self.args.image_size),
-            watermark_transform=get_val_transforms(self.args.image_size),
+            image_size=self.args.image_size,
             watermark_size=self.args.watermark_size
         )
         
@@ -171,7 +170,7 @@ class Trainer:
             images = images.to(self.device)
             watermarks = watermarks.to(self.device)
             
-            # 前向传播
+            # 前向传播 - 有水印样本
             watermarked, attacked, extracted_wm, confidence = self.model(images, watermarks)
             
             # 计算损失
@@ -182,6 +181,24 @@ class Trainer:
             # 反向传播
             self.optimizer.zero_grad()
             loss.backward()
+            
+            # 每5个batch添加无水印样本训练
+            if batch_idx % 5 == 0:
+                # 创建无水印样本（使用随机噪声作为水印）
+                fake_watermarks = torch.rand_like(watermarks)
+                with torch.no_grad():
+                    fake_watermarked = self.model.encode(images, fake_watermarks)
+                
+                # 从含水印图像中提取（应该失败）
+                fake_extracted, fake_confidence = self.model.decode(fake_watermarked)
+                
+                # 计算无水印样本的置信度损失（目标为0）
+                target_no_watermark = torch.zeros_like(fake_confidence)
+                loss_no_wm = F.binary_cross_entropy(fake_confidence, target_no_watermark)
+                
+                # 加权添加到总损失
+                loss_no_wm = loss_no_wm * 0.3  # 权重较小
+                loss_no_wm.backward()
             
             # 梯度裁剪
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
@@ -208,7 +225,8 @@ class Trainer:
             pbar.set_postfix({
                 'Loss': f"{loss.item():.4f}",
                 'PSNR': f"{psnr:.2f}",
-                'NC': f"{nc:.4f}"
+                'NC': f"{nc:.4f}",
+                'Conf': f"{confidence.mean().item():.4f}"
             })
         
         # 记录epoch平均指标
@@ -282,8 +300,9 @@ class Trainer:
             self.scheduler.step()
             
             # 保存最佳模型
-            is_best = val_metrics['psnr'] > self.best_psnr
+            is_best = val_metrics['nc'] > self.best_nc
             if is_best:
+                self.best_nc = val_metrics['nc']
                 self.best_psnr = val_metrics['psnr']
             
             # 保存检查点

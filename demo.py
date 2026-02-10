@@ -11,7 +11,7 @@ import torch
 import argparse
 from PIL import Image
 import torchvision.transforms as transforms
-from torch.utils.data import DataLoader
+import random
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -20,7 +20,7 @@ from src.extract import WatermarkExtractor
 from src.utils.visualizer import save_comparison
 from src.utils.metrics import evaluate_watermark_system, calculate_psnr, calculate_nc
 from src.config import config
-from src.data import WatermarkDataset, get_val_transforms
+from src.data import WatermarkDataset
 
 
 def demo_embed_extract(dataset, checkpoint_path=None):
@@ -157,12 +157,13 @@ def demo_robustness(data_loader, checkpoint_path=None):
     
     model.eval()
     
-    # 从 DataLoader 获取一个批次的数据
-    images, watermarks = next(iter(data_loader))
+    # 从 Dataset 获取一个样本数据
+    idx = random.randint(0, len(data_loader) - 1)
+    images, watermarks = data_loader[idx]
     
-    # 只取批次中的第一张图片进行演示
-    image_tensor = images[0:1].to(device)
-    watermark_tensor = watermarks[0:1].to(device)
+    # 添加 batch 维度
+    image_tensor = images.unsqueeze(0).to(device)
+    watermark_tensor = watermarks.unsqueeze(0).to(device)
     
     print(f"\n图像尺寸: {image_tensor.shape}")
     print(f"水印尺寸: {watermark_tensor.shape}")
@@ -263,7 +264,7 @@ def demo_robustness(data_loader, checkpoint_path=None):
 
 def main():
     parser = argparse.ArgumentParser(description='StegoMark 演示')
-    parser.add_argument('--checkpoint', type=str, default='checkpoints/epoch_50.pth', help='模型检查点路径')
+    parser.add_argument('--checkpoint', type=str, default=config.demo_model_path, help='模型检查点路径')
     parser.add_argument('--mode', type=str, default='all', 
                         choices=['embed', 'robustness', 'all'],
                         help='演示模式: embed=嵌入提取, robustness=鲁棒性测试, all=全部')

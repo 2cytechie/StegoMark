@@ -16,6 +16,9 @@ class Config:
     test_image_dir: str = "data/test/images"
     test_watermark_dir: str = "data/test/watermarks"
     num_workers: int = 4  # 数据加载器线程数
+
+    # demo参数
+    demo_model_path: str = "checkpoints/epoch_20.pth"
     
     # 输出路径
     checkpoint_dir: str = "checkpoints"
@@ -33,7 +36,6 @@ class Config:
     image_size: int = 150
     watermark_size: int = 64
     overlap: int = 0            # 分块重叠区域
-    block_mode: str = 'all'  # 分块模式：'all'或'random'
     
     # 训练参数
     batch_size: int = 4
@@ -58,7 +60,7 @@ class Config:
     dwt_level: int = 1              # 分解层数
     
     # 攻击模拟参数
-    attack_prob: float = 0.5        # 攻击概率
+    attack_prob: float = 0.3        # 攻击概率
     
     # 评估指标阈值
     psnr_threshold: float = 35.0

@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import random
+import torchvision.transforms.functional as TF
 
 
 class AttackSimulator(nn.Module):

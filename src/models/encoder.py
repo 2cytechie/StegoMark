@@ -126,7 +126,7 @@ class WatermarkEncoder(nn.Module):
         )
         
         # 可学习的嵌入强度
-        self.embedding_strength = nn.Parameter(torch.tensor(1.0))
+        self.embedding_strength = nn.Parameter(torch.tensor(0.5))
         # 水印增强网络 - 提高水印的鲁棒性
         self.watermark_enhance = nn.Sequential(
             nn.Conv2d(3, 16, 3, padding=1),
